@@ -1,5 +1,5 @@
 from vidcp.config import get_settings
-from vidcp.db import connect
+from vidcp.db import MIGRATIONS, connect
 
 EXPECTED_TABLES = {
     "videos",
@@ -7,6 +7,7 @@ EXPECTED_TABLES = {
     "scenes",
     "segments",
     "ocr_blocks",
+    "frames",
     "fts",
     "schema_version",
 }
@@ -33,11 +34,11 @@ def test_migration_001_creates_all_tables():
         conn.close()
 
 
-def test_schema_version_is_one():
+def test_schema_version_matches_migration_count():
     conn = connect()
     try:
         version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        assert version == 1
+        assert version == len(MIGRATIONS)
     finally:
         conn.close()
 
@@ -47,7 +48,7 @@ def test_migrations_are_idempotent():
     conn = connect()
     try:
         version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        assert version == 1
+        assert version == len(MIGRATIONS)
         assert EXPECTED_TABLES <= _table_names(conn)
     finally:
         conn.close()

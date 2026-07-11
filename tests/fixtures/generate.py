@@ -57,7 +57,8 @@ def _make_color(path: Path) -> None:
 
 
 def _make_cuts(path: Path) -> None:
-    # Four visually distinct 2s segments -> hard cuts at 2s, 4s, 6s.
+    # Four maximally-distinct solid-colour 2s segments -> hard cuts at 2s, 4s,
+    # 6s that PySceneDetect reliably detects at the default threshold.
     _ffmpeg(
         [
             "-f",
@@ -75,7 +76,7 @@ def _make_cuts(path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=s=320x240:r=15:d=2",
+            "color=c=white:s=320x240:r=15:d=2",
             "-f",
             "lavfi",
             "-i",

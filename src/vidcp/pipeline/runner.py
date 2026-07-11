@@ -1,9 +1,12 @@
 """Minimal pipeline runner.
 
 Runs stages in dependency order, recording each in the ``stages`` table
-(``running`` -> ``done``/``failed``). A stage already ``done`` with a matching
-``config_hash`` is skipped. Failures are recorded and returned, not raised, so a
-batch can continue. The resumable, parallel runner arrives in Step 7.
+(``running`` -> ``done``/``failed``). A stage is skipped only when it is already
+``done`` with a matching ``config_hash`` *and* none of its dependencies re-ran
+in this invocation — so changing an upstream stage (e.g. the scene threshold)
+transparently invalidates its downstream stages. Failures are recorded and
+returned, not raised, so a batch can continue. The resumable, parallel runner
+arrives in Step 7.
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ def _order_stages(stages: list[Stage]) -> list[Stage]:
 def run_pipeline(ctx: VideoContext, stages: list[Stage]) -> list[StageOutcome]:
     conn = ctx.conn
     outcomes: list[StageOutcome] = []
+    ran: set[str] = set()  # stages that actually (re)ran this invocation
 
     for stage in _order_stages(stages):
         config_hash = stage.config_hash(ctx.settings)
@@ -51,11 +55,13 @@ def run_pipeline(ctx: VideoContext, stages: list[Stage]) -> list[StageOutcome]:
             "SELECT status, config_hash FROM stages WHERE video_id=? AND stage=?",
             (ctx.video_id, stage.name),
         ).fetchone()
-        if (
+        up_to_date = (
             existing is not None
             and existing["status"] == "done"
             and existing["config_hash"] == config_hash
-        ):
+        )
+        dependency_reran = any(dep in ran for dep in stage.depends_on)
+        if up_to_date and not dependency_reran:
             outcomes.append(StageOutcome(stage.name, "skipped"))
             continue
 
@@ -87,6 +93,7 @@ def run_pipeline(ctx: VideoContext, stages: list[Stage]) -> list[StageOutcome]:
                 (_now(), ctx.video_id, stage.name),
             )
             conn.commit()
+            ran.add(stage.name)
             outcomes.append(StageOutcome(stage.name, "done"))
 
     return outcomes

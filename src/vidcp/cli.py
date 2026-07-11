@@ -26,10 +26,11 @@ from vidcp.config import Settings, get_settings
 from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.library import resolve_id
-from vidcp.models import StageState, Video
+from vidcp.models import SceneRow, StageState, Video
+from vidcp.pipeline import default_stages
 from vidcp.pipeline.base import VideoContext
 from vidcp.pipeline.runner import run_pipeline
-from vidcp.pipeline.stages.probe import ProbeStage, is_media_file
+from vidcp.pipeline.stages.probe import is_media_file
 from vidcp.store import add_source, artifact_dir, sha256_file
 from vidcp.util import format_duration, now_iso
 
@@ -289,10 +290,12 @@ def ingest(
                     (video_id, str(path.resolve()), now_iso()),
                 )
                 conn.commit()
-            outcomes = run_pipeline(VideoContext(video_id, conn, settings), [ProbeStage()])
+            outcomes = run_pipeline(VideoContext(video_id, conn, settings), default_stages())
             failed = [o for o in outcomes if o.status == "failed"]
             if failed:
-                console.print(f"[red]error[/red] {path.name}: probe failed: {failed[0].error}")
+                console.print(
+                    f"[red]error[/red] {path.name}: {failed[0].name} failed: {failed[0].error}"
+                )
                 errors += 1
             else:
                 console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
@@ -406,7 +409,37 @@ def scenes(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """List detected scenes for a video."""
-    _not_implemented("scenes")
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        rows = conn.execute("SELECT * FROM scenes WHERE video_id=? ORDER BY idx", (vid,)).fetchall()
+        scene_models = [SceneRow.from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+    if json_output:
+        print(json.dumps([s.model_dump(mode="json") for s in scene_models]))
+        return
+    if not scene_models:
+        console.print("No scenes. Has this video been ingested?")
+        return
+
+    table = Table(title=f"scenes · {vid[:8]}")
+    table.add_column("idx", justify="right")
+    table.add_column("start", justify="right")
+    table.add_column("end", justify="right")
+    table.add_column("duration", justify="right")
+    table.add_column("keyframe")
+    for scene in scene_models:
+        keyframe = Path(scene.keyframe_path).name if scene.keyframe_path else "-"
+        table.add_row(
+            str(scene.idx),
+            f"{scene.start_s:.2f}",
+            f"{scene.end_s:.2f}",
+            format_duration(scene.end_s - scene.start_s),
+            keyframe,
+        )
+    console.print(table)
 
 
 @app.command()

@@ -67,8 +67,21 @@ CREATE VIRTUAL TABLE fts USING fts5(
 );
 """
 
+# Migration 002 — the frames table (Step 3). Note: the plan numbers the vec0
+# table as 002 and frames as 003, but vec0 is deferred to Step 6, so frames is
+# applied as 002 here. vec0 will be the next migration.
+MIGRATION_002 = """
+CREATE TABLE frames (
+  id INTEGER PRIMARY KEY,
+  video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  scene_id INT REFERENCES scenes(id) ON DELETE CASCADE,
+  ts_s REAL NOT NULL, path TEXT NOT NULL, phash TEXT, kept INT NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_frames_video ON frames(video_id, ts_s);
+"""
+
 # Applied in order; the list index (1-based) is the schema version.
-MIGRATIONS: list[str] = [MIGRATION_001]
+MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002]
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
