@@ -22,8 +22,9 @@ MIGRATION_001_TABLES = {
 }
 
 
-def test_list_command_errors_gracefully():
-    result = runner.invoke(app, ["list"])
+def test_placeholder_command_errors_gracefully():
+    # `stats` is still a placeholder in Step 2.
+    result = runner.invoke(app, ["stats"])
     assert result.exit_code != 0
     assert isinstance(result.exception, VidcpError)
     assert "not implemented" in result.exception.message.lower()
@@ -33,7 +34,7 @@ def test_placeholder_command_renders_friendly_error_not_traceback():
     # The real console-script entrypoint must render VidcpError as a friendly
     # message (exit 1), never a Python traceback.
     result = subprocess.run(
-        ["uv", "run", "vidcp", "list"],
+        ["uv", "run", "vidcp", "stats"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,

@@ -1,14 +1,16 @@
 """vidcp command-line interface.
 
-Only ``doctor`` is functional in Step 1; every other command is a placeholder
-that raises :class:`~vidcp.errors.VidcpError` ("not implemented yet") so it
-fails cleanly rather than with a traceback. Heavy libraries (whisper, rapidocr,
+Functional so far: ``doctor`` (Step 1) plus ``ingest``/``list``/``inspect``/
+``delete`` (Step 2). The remaining commands are placeholders that raise
+:class:`~vidcp.errors.VidcpError` ("not implemented yet") so they fail cleanly
+rather than with a traceback. Heavy libraries (whisper, rapidocr,
 sentence-transformers) are never imported at module load time — this keeps CLI
 startup fast.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,6 +25,13 @@ from vidcp import __version__
 from vidcp.config import Settings, get_settings
 from vidcp.db import connect
 from vidcp.errors import VidcpError
+from vidcp.library import resolve_id
+from vidcp.models import StageState, Video
+from vidcp.pipeline.base import VideoContext
+from vidcp.pipeline.runner import run_pipeline
+from vidcp.pipeline.stages.probe import ProbeStage, is_media_file
+from vidcp.store import add_source, artifact_dir, sha256_file
+from vidcp.util import format_duration, now_iso
 
 app = typer.Typer(
     name="vidcp",
@@ -44,6 +53,40 @@ def _not_implemented(name: str) -> None:
         f"`vidcp {name}` is not implemented yet.",
         hint="This command is delivered in a later step of the build.",
     )
+
+
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+
+def _expand_paths(raw: list[str]) -> list[Path]:
+    """Expand directories to their contained video files; keep files as-is."""
+    files: list[Path] = []
+    for item in raw:
+        path = Path(item)
+        if path.is_dir():
+            files.extend(sorted(f for f in path.rglob("*") if f.suffix.lower() in VIDEO_EXTS))
+        else:
+            files.append(path)
+    return files
+
+
+def _short_ts(value: str | None) -> str:
+    return (value or "")[:19].replace("T", " ") if value else "-"
+
+
+def _print_stages_table(stage_states: list[StageState]) -> None:
+    table = Table(title="stages")
+    for column in ("stage", "status", "started", "finished", "error"):
+        table.add_column(column, overflow="fold")
+    for state in stage_states:
+        table.add_row(
+            state.stage,
+            state.status,
+            _short_ts(state.started_at),
+            _short_ts(state.finished_at),
+            state.error or "-",
+        )
+    console.print(table)
 
 
 def _version_callback(value: bool) -> None:
@@ -210,11 +253,55 @@ def doctor() -> None:
 
 @app.command()
 def ingest(
-    paths: Optional[list[str]] = typer.Argument(None, help="Video files to ingest."),
+    paths: Optional[list[str]] = typer.Argument(None, help="Video files or directories."),
     force: bool = typer.Option(False, "--force", help="Re-ingest even if already present."),
 ) -> None:
     """Ingest one or more video files into the library."""
-    _not_implemented("ingest")
+    if not paths:
+        raise VidcpError("no paths given", hint="usage: vidcp ingest <file-or-dir> ...")
+    settings = get_settings()
+    files = _expand_paths(paths)
+    if not files:
+        raise VidcpError("no video files found in the given paths")
+
+    conn = connect()
+    ingested = 0
+    errors = 0
+    try:
+        for path in files:
+            if not path.exists():
+                console.print(f"[red]skip[/red] {path}: file not found")
+                errors += 1
+                continue
+            if not is_media_file(path):
+                console.print(f"[red]skip[/red] {path}: not a recognised media file")
+                errors += 1
+                continue
+            video_id = sha256_file(path)
+            existing = conn.execute("SELECT id FROM videos WHERE id=?", (video_id,)).fetchone()
+            if existing and not force:
+                console.print(f"already ingested {video_id[:8]}  ({path.name})")
+                continue
+            add_source(path, video_id)
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
+                    (video_id, str(path.resolve()), now_iso()),
+                )
+                conn.commit()
+            outcomes = run_pipeline(VideoContext(video_id, conn, settings), [ProbeStage()])
+            failed = [o for o in outcomes if o.status == "failed"]
+            if failed:
+                console.print(f"[red]error[/red] {path.name}: probe failed: {failed[0].error}")
+                errors += 1
+            else:
+                console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
+                ingested += 1
+    finally:
+        conn.close()
+
+    if errors and not ingested:
+        raise typer.Exit(code=1)
 
 
 @app.command("list")
@@ -222,7 +309,36 @@ def list_videos(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """List ingested videos."""
-    _not_implemented("list")
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT * FROM videos ORDER BY ingested_at DESC").fetchall()
+    finally:
+        conn.close()
+    videos = [Video.from_row(row) for row in rows]
+
+    if json_output:
+        print(json.dumps([v.model_dump(mode="json") for v in videos]))
+        return
+    if not videos:
+        console.print("No videos ingested yet. Run [bold]vidcp ingest <file>[/bold].")
+        return
+
+    table = Table(title="videos")
+    table.add_column("id")
+    table.add_column("title", overflow="fold")
+    table.add_column("duration", justify="right")
+    table.add_column("resolution")
+    table.add_column("ingested")
+    for video in videos:
+        resolution = f"{video.width}x{video.height}" if video.width and video.height else "-"
+        table.add_row(
+            video.short_id,
+            video.title or "-",
+            format_duration(video.duration_s),
+            resolution,
+            _short_ts(video.ingested_at),
+        )
+    console.print(table)
 
 
 @app.command()
@@ -232,7 +348,37 @@ def inspect(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Show details for a single video."""
-    _not_implemented("inspect")
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        row = conn.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
+        video = Video.from_row(row)
+        stage_states = [
+            StageState.from_row(r)
+            for r in conn.execute(
+                "SELECT * FROM stages WHERE video_id=? ORDER BY stage", (vid,)
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    if json_output:
+        payload = video.model_dump(mode="json")
+        if stages:
+            payload["stages"] = [s.model_dump(mode="json") for s in stage_states]
+        print(json.dumps(payload))
+        return
+
+    table = Table(title=f"video {video.short_id}", show_header=False)
+    table.add_column("field", style="bold")
+    table.add_column("value", overflow="fold")
+    data = video.model_dump(mode="json")
+    data.pop("meta", None)  # verbose ffprobe blob; omit from the human view
+    for key, value in data.items():
+        table.add_row(key, "-" if value is None else str(value))
+    console.print(table)
+    if stages:
+        _print_stages_table(stage_states)
 
 
 @app.command()
@@ -241,7 +387,17 @@ def delete(
     keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep files on disk."),
 ) -> None:
     """Delete a video and its artifacts."""
-    _not_implemented("delete")
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        # FK cascade removes stages/scenes/segments/ocr_blocks.
+        conn.execute("DELETE FROM videos WHERE id=?", (vid,))
+        conn.commit()
+    finally:
+        conn.close()
+    if not keep_artifacts:
+        shutil.rmtree(artifact_dir(vid, create=False), ignore_errors=True)
+    console.print(f"deleted {vid[:8]}")
 
 
 @app.command()
