@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / virtualenv
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+
+# Generated test fixtures (speech.mp4 is committed; the rest are generated)
+tests/fixtures/color.mp4
+tests/fixtures/cuts.mp4
+tests/fixtures/text.mp4

@@ -1,0 +1,45 @@
+[project]
+name = "vidcp"
+version = "0.1.0"
+description = "Local-first CLI that turns video files into searchable knowledge."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "scenedetect[opencv]>=0.6.4",
+    "faster-whisper>=1.0",
+    "rapidocr-onnxruntime>=1.3",
+    "sentence-transformers>=3.0",
+    "sqlite-vec>=0.1.6",
+    "imagehash>=4.3",
+    "pillow>=10.3",
+]
+
+[project.scripts]
+# Entrypoint is the main() wrapper (not the bare Typer `app`) so user-facing
+# errors render as friendly messages instead of tracebacks. See vidcp.cli.main.
+vidcp = "vidcp.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vidcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
