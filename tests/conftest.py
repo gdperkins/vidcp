@@ -23,6 +23,8 @@ def _isolated_home(tmp_path, monkeypatch):
 
     home = tmp_path / "vidcp_home"
     monkeypatch.setenv("VIDCP_HOME", str(home))
+    # Tests use the tiny whisper model (fast); matches the CI configuration.
+    monkeypatch.setenv("VIDCP_WHISPER_MODEL", "tiny")
     get_settings.cache_clear()
     yield home
     get_settings.cache_clear()

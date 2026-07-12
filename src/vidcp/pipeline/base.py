@@ -19,6 +19,14 @@ from vidcp.errors import VidcpError
 from vidcp.store import artifact_dir
 
 
+class StageSkipped(Exception):
+    """Raised inside a stage's ``run`` to mark it skipped (not applicable).
+
+    The runner records the stage with status ``skipped`` and cascades the skip
+    to dependents.
+    """
+
+
 class VideoContext:
     def __init__(self, video_id: str, conn: sqlite3.Connection, settings: Settings) -> None:
         self.video_id = video_id

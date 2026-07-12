@@ -1,11 +1,11 @@
 """vidcp command-line interface.
 
-Functional so far: ``doctor`` (Step 1) plus ``ingest``/``list``/``inspect``/
-``delete`` (Step 2). The remaining commands are placeholders that raise
-:class:`~vidcp.errors.VidcpError` ("not implemented yet") so they fail cleanly
-rather than with a traceback. Heavy libraries (whisper, rapidocr,
-sentence-transformers) are never imported at module load time — this keeps CLI
-startup fast.
+Functional so far: ``doctor`` (Step 1); ``ingest``/``list``/``inspect``/
+``delete`` (Step 2); ``scenes`` (Step 3); ``transcript`` (Step 4). The remaining
+commands are placeholders that raise :class:`~vidcp.errors.VidcpError` ("not
+implemented yet") so they fail cleanly rather than with a traceback. Heavy
+libraries (whisper, rapidocr, sentence-transformers) are never imported at
+module load time — this keeps CLI startup fast.
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from vidcp import __version__
 from vidcp.config import Settings, get_settings
 from vidcp.db import connect
 from vidcp.errors import VidcpError
+from vidcp.export.srt import to_srt
+from vidcp.export.vtt import to_vtt
 from vidcp.library import resolve_id
-from vidcp.models import SceneRow, StageState, Video
+from vidcp.models import SceneRow, Segment, StageState, Video
 from vidcp.pipeline import default_stages
 from vidcp.pipeline.base import VideoContext
 from vidcp.pipeline.runner import run_pipeline
@@ -256,11 +258,23 @@ def doctor() -> None:
 def ingest(
     paths: Optional[list[str]] = typer.Argument(None, help="Video files or directories."),
     force: bool = typer.Option(False, "--force", help="Re-ingest even if already present."),
+    whisper_model: Optional[str] = typer.Option(
+        None, "--whisper-model", help="Override the whisper model for this run."
+    ),
+    no_ocr: bool = typer.Option(False, "--no-ocr", help="Skip OCR for this run."),
 ) -> None:
     """Ingest one or more video files into the library."""
     if not paths:
         raise VidcpError("no paths given", hint="usage: vidcp ingest <file-or-dir> ...")
     settings = get_settings()
+    overrides: dict[str, object] = {}
+    if whisper_model:
+        overrides["whisper_model"] = whisper_model
+    if no_ocr:
+        overrides["ocr_enabled"] = False
+    if overrides:
+        # A per-run copy so the overrides flow into stage config fingerprints.
+        settings = settings.model_copy(update=overrides)
     files = _expand_paths(paths)
     if not files:
         raise VidcpError("no video files found in the given paths")
@@ -448,7 +462,34 @@ def transcript(
     fmt: str = typer.Option("txt", "--format", help="Output format: txt|srt|vtt|json."),
 ) -> None:
     """Show or export a video transcript."""
-    _not_implemented("transcript")
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        rows = conn.execute(
+            "SELECT * FROM segments WHERE video_id=? ORDER BY start_s", (vid,)
+        ).fetchall()
+        segments = [Segment.from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+    if not segments:
+        console.print("No transcript: no speech detected (or the video has no audio).")
+        return
+
+    if fmt == "srt":
+        print(to_srt(segments))
+    elif fmt == "vtt":
+        print(to_vtt(segments))
+    elif fmt == "json":
+        print(json.dumps([s.model_dump(mode="json") for s in segments]))
+    elif fmt == "txt":
+        for seg in segments:
+            print(f"[{format_duration(seg.start_s)}] {seg.text}")
+    else:
+        raise VidcpError(
+            f"unknown transcript format '{fmt}'",
+            hint="choose one of: txt, srt, vtt, json",
+        )
 
 
 @app.command()
