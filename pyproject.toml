@@ -17,6 +17,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "imagehash>=4.3",
     "pillow>=10.3",
+    "mcp>=1.10,<2",
 ]
 
 [project.scripts]
