@@ -167,6 +167,66 @@ async def test_search_restricts_to_video_id_prefix(client):
     assert all(h["video_id"] == VID_A for h in payload["hits"])
 
 
+async def test_get_transcript_full(client):
+    seed_video(VID_A)
+    seed_segment(VID_A, 0.0, 4.0, "hello world")
+    seed_segment(VID_A, 4.0, 8.0, "second segment")
+    payload = result_payload(await client.call_tool("get_transcript", {"video_id": VID_A}))
+    assert payload["video_id"] == VID_A
+    assert [s["text"] for s in payload["segments"]] == ["hello world", "second segment"]
+    assert set(payload["segments"][0]) == {"id", "start_s", "end_s", "text"}
+
+
+async def test_get_transcript_window_overlap(client):
+    seed_video(VID_A)
+    seed_segment(VID_A, 0.0, 4.0, "before")
+    seed_segment(VID_A, 3.0, 7.0, "overlaps start")
+    seed_segment(VID_A, 8.0, 12.0, "inside")
+    seed_segment(VID_A, 20.0, 24.0, "after")
+    payload = result_payload(
+        await client.call_tool("get_transcript", {"video_id": VID_A, "start_s": 4.0, "end_s": 15.0})
+    )
+    assert [s["text"] for s in payload["segments"]] == ["overlaps start", "inside"]
+
+
+async def test_get_transcript_empty_window_is_not_an_error(client):
+    seed_video(VID_A)
+    seed_segment(VID_A, 0.0, 4.0, "hello")
+    payload = result_payload(
+        await client.call_tool(
+            "get_transcript", {"video_id": VID_A, "start_s": 100.0, "end_s": 110.0}
+        )
+    )
+    assert payload["segments"] == []
+
+
+async def test_get_transcript_silent_video_errors(client):
+    seed_video(VID_A)
+    seed_stage(VID_A, "transcribe", "skipped")
+    result = await client.call_tool("get_transcript", {"video_id": VID_A})
+    assert "no audio" in error_text(result)
+
+
+async def test_get_transcript_not_finished_errors(client):
+    seed_video(VID_A)  # no transcribe stage row at all
+    result = await client.call_tool("get_transcript", {"video_id": VID_A})
+    assert "not available yet" in error_text(result)
+
+
+async def test_get_transcript_no_speech_errors(client):
+    seed_video(VID_A)
+    seed_stage(VID_A, "transcribe", "done")
+    result = await client.call_tool("get_transcript", {"video_id": VID_A})
+    assert "no speech" in error_text(result)
+
+
+async def test_get_transcript_failed_stage_errors(client):
+    seed_video(VID_A)
+    seed_stage(VID_A, "transcribe", "failed", error="model exploded")
+    result = await client.call_tool("get_transcript", {"video_id": VID_A})
+    assert "model exploded" in error_text(result)
+
+
 def test_python_dash_m_vidcp_runs():
     result = subprocess.run(
         [sys.executable, "-m", "vidcp", "--help"], capture_output=True, text=True

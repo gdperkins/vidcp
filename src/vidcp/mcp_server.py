@@ -104,7 +104,49 @@ def search(
     return {"hits": [hit.model_dump(mode="json") for hit in hits]}
 
 
-_TOOLS = (search, list_videos, get_video)
+def _explain_missing_transcript(conn, vid: str) -> NoReturn:
+    stage = conn.execute(
+        "SELECT status, error FROM stages WHERE video_id=? AND stage='transcribe'", (vid,)
+    ).fetchone()
+    if stage is None or stage["status"] in ("pending", "running"):
+        _fail("transcript not available yet", "transcription has not completed; poll get_video")
+    if stage["status"] == "failed":
+        _fail(
+            f"transcription failed: {stage['error']}",
+            f"retry with `vidcp reindex {vid[:8]} --stage transcribe`",
+        )
+    if stage["status"] == "skipped":
+        _fail("no transcript: the video has no audio track")
+    _fail("no transcript: no speech was detected")
+
+
+def get_transcript(video_id: str, start_s: float | None = None, end_s: float | None = None) -> dict:
+    """Get a video's transcript segments, optionally windowed to [start_s, end_s].
+
+    A segment is included if it overlaps the window. Use a window around a
+    search hit's ts_s to pull surrounding context.
+    """
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+        sql = "SELECT id, start_s, end_s, text FROM segments WHERE video_id=?"
+        params: list = [vid]
+        if end_s is not None:
+            sql += " AND start_s < ?"
+            params.append(end_s)
+        if start_s is not None:
+            sql += " AND end_s > ?"
+            params.append(start_s)
+        rows = conn.execute(sql + " ORDER BY start_s", params).fetchall()
+        if not rows:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM segments WHERE video_id=?", (vid,)
+            ).fetchone()[0]
+            if total == 0:
+                _explain_missing_transcript(conn, vid)
+    return {"video_id": vid, "segments": [dict(row) for row in rows]}
+
+
+_TOOLS = (search, list_videos, get_video, get_transcript)
 
 
 def create_server() -> FastMCP:
