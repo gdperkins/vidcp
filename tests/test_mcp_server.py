@@ -5,6 +5,8 @@ fixture gives every test a fresh ``VIDCP_HOME``). The vector search leg is
 never exercised (the ``vec`` table stays empty), so no models are downloaded.
 """
 
+import base64
+import io
 import json
 import subprocess
 import sys
@@ -101,6 +103,23 @@ def seed_scene(video_id, idx, start_s, end_s):
         conn.commit()
     finally:
         conn.close()
+
+
+def seed_frame(video_id, ts_s, tmp_path, size=(1920, 1080), kept=1):
+    from PIL import Image as PILImage
+
+    path = tmp_path / f"frame_{ts_s:.0f}_{kept}.jpg"
+    PILImage.new("RGB", size, (200, 40, 40)).save(path, "JPEG")
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO frames(video_id, ts_s, path, kept) VALUES (?,?,?,?)",
+            (video_id, ts_s, str(path), kept),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return path
 
 
 async def test_lists_expected_tools(client):
@@ -253,6 +272,46 @@ async def test_list_scenes_empty_is_not_an_error(client):
     seed_video(VID_A)
     payload = result_payload(await client.call_tool("list_scenes", {"video_id": VID_A}))
     assert payload["scenes"] == []
+
+
+async def test_get_keyframe_nearest_and_downscaled(client, tmp_path):
+    from PIL import Image as PILImage
+
+    seed_video(VID_A)
+    seed_frame(VID_A, 10.0, tmp_path)
+    seed_frame(VID_A, 50.0, tmp_path)
+    result = await client.call_tool("get_keyframe", {"video_id": VID_A[:8], "ts_s": 18.0})
+    assert not result.isError, result.content
+    texts = [c for c in result.content if c.type == "text"]
+    images = [c for c in result.content if c.type == "image"]
+    assert texts and "10.00s" in texts[0].text
+    assert images and images[0].mimeType == "image/jpeg"
+    decoded = PILImage.open(io.BytesIO(base64.b64decode(images[0].data)))
+    assert max(decoded.size) <= 1280
+
+
+async def test_get_keyframe_ignores_discarded_frames(client, tmp_path):
+    seed_video(VID_A)
+    seed_frame(VID_A, 10.0, tmp_path, kept=0)
+    seed_frame(VID_A, 50.0, tmp_path)
+    result = await client.call_tool("get_keyframe", {"video_id": VID_A, "ts_s": 10.0})
+    assert not result.isError, result.content
+    texts = [c for c in result.content if c.type == "text"]
+    assert "50.00s" in texts[0].text
+
+
+async def test_get_keyframe_without_frames_errors(client):
+    seed_video(VID_A)
+    result = await client.call_tool("get_keyframe", {"video_id": VID_A, "ts_s": 1.0})
+    assert "no keyframes" in error_text(result)
+
+
+async def test_get_keyframe_missing_file_errors(client, tmp_path):
+    seed_video(VID_A)
+    path = seed_frame(VID_A, 10.0, tmp_path)
+    path.unlink()
+    result = await client.call_tool("get_keyframe", {"video_id": VID_A, "ts_s": 10.0})
+    assert "keyframe file missing" in error_text(result)
 
 
 def test_python_dash_m_vidcp_runs():

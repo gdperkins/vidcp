@@ -9,10 +9,12 @@ Nothing here may write to stdout — stdout is the MCP stdio transport.
 
 from __future__ import annotations
 
+import io
 from contextlib import contextmanager
+from pathlib import Path
 from typing import NoReturn
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 
 from vidcp.db import connect
@@ -27,6 +29,9 @@ _INSTRUCTIONS = (
     "prefix works. ingest() returns immediately — poll get_video() until every "
     "stage is 'done' or 'skipped'."
 )
+
+_MAX_EDGE = 1280
+_JPEG_QUALITY = 85
 
 
 @contextmanager
@@ -156,7 +161,39 @@ def list_scenes(video_id: str) -> dict:
     return {"video_id": vid, "scenes": [dict(row) for row in rows]}
 
 
-_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes)
+def get_keyframe(video_id: str, ts_s: float):
+    """Get the stored keyframe nearest ts_s as a JPEG image (longest side <= 1280px).
+
+    Returns a text block stating the frame's actual timestamp plus the image
+    itself, so an agent can literally look at the moment behind a search hit.
+    """
+    # No return annotation: the mixed [str, Image] payload has no output schema.
+    from PIL import Image as PILImage
+
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+        row = conn.execute(
+            "SELECT ts_s, path FROM frames WHERE video_id=? AND kept=1 "
+            "ORDER BY ABS(ts_s - ?) LIMIT 1",
+            (vid, ts_s),
+        ).fetchone()
+    if row is None:
+        _fail("no keyframes for this video", "keyframes may still be processing; poll get_video")
+    frame_path = Path(row["path"])
+    if not frame_path.exists():
+        _fail(f"keyframe file missing: {frame_path}")
+    with PILImage.open(frame_path) as source:
+        frame = source.convert("RGB")
+    frame.thumbnail((_MAX_EDGE, _MAX_EDGE))
+    buffer = io.BytesIO()
+    frame.save(buffer, format="JPEG", quality=_JPEG_QUALITY)
+    return [
+        f"keyframe at {row['ts_s']:.2f}s (requested {ts_s:.2f}s)",
+        Image(data=buffer.getvalue(), format="jpeg"),
+    ]
+
+
+_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes, get_keyframe)
 
 
 def create_server() -> FastMCP:
