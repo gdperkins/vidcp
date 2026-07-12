@@ -58,7 +58,10 @@ claude mcp add vidcp -- vidcp mcp
 Tools: `search`, `list_videos`, `get_video`, `get_transcript`, `list_scenes`,
 `get_keyframe` (returns the nearest stored keyframe as an image), and `ingest`.
 `ingest` returns immediately and processing continues in a background process —
-poll `get_video` until every stage reports `done` or `skipped`.
+poll `get_video` until every stage reports `done` or `skipped`. The video
+registers in the library shortly after `ingest` returns, so poll `get_video`
+rather than treating an initial "no video matches" error as failure; a stage
+reporting `failed` is also terminal.
 
 ## Configuration
 

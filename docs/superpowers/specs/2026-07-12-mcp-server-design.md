@@ -108,9 +108,13 @@ the child rather than accumulating in the long-lived server process, and the
 runner's existing crash recovery (stale `running` rows reset to `pending` on
 the next run) means a killed child leaves cleanly resumable state. The child
 re-hashing the file is redundant but cheap, and keeps its behavior identical to
-a normal CLI ingest. Concurrent duplicate calls are tolerated: the CLI's
-already-ingested check and the stage state machine make the second run a cheap
-no-op or resume.
+a normal CLI ingest. Concurrent duplicate ingests of the *same* video are not
+fully safe: if a second `--force` child starts while the first is mid-pipeline,
+it resets the first run's live `running` rows and can interleave stage cleans
+and inserts, duplicating `segments`/`fts`/`vec` rows until the next reindex.
+v1 mitigates this by documenting "don't re-ingest while a stage is running"
+(see the tool docstrings and server instructions); a `running`-state guard
+against launching a second child is noted as a possible follow-up.
 
 ## Error handling
 

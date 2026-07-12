@@ -30,7 +30,11 @@ _INSTRUCTIONS = (
     "on-screen text (OCR), transcript retrieval, scene lists, keyframe images, "
     "and ingestion of new videos. Video ids are SHA-256 hashes; any unique "
     "prefix works. ingest() returns immediately — poll get_video() until every "
-    "stage is 'done' or 'skipped'."
+    "stage is 'done' or 'skipped'. The video only appears in get_video() once "
+    "the background process has registered it, so a 'no video matches' error "
+    "shortly after ingest() means try again in a bit, not that ingest failed. "
+    "Stop polling if any stage reports 'failed'. Do not call ingest() again "
+    "for the same file while a stage shows 'running'."
 )
 
 _MAX_EDGE = 1280
@@ -216,7 +220,11 @@ def ingest(path: str) -> dict:
 
     Returns immediately with the video id; probing, transcription, OCR, and
     embedding continue in a background process. Poll get_video() until every
-    stage is 'done' or 'skipped'.
+    stage is 'done' or 'skipped'. The video shows up in get_video() only once
+    that background process has registered it, so a 'no video matches' error
+    shortly after calling this means try again in a bit, not that ingest
+    failed. Do not call this again for the same file while a stage shows
+    'running'.
     """
     file = Path(path).expanduser()
     if not file.is_file():

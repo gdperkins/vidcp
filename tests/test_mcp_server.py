@@ -244,6 +244,13 @@ async def test_get_transcript_not_finished_errors(client):
     assert "not available yet" in error_text(result)
 
 
+async def test_get_transcript_still_running_errors(client):
+    seed_video(VID_A)
+    seed_stage(VID_A, "transcribe", "running")
+    result = await client.call_tool("get_transcript", {"video_id": VID_A})
+    assert "not available yet" in error_text(result)
+
+
 async def test_get_transcript_no_speech_errors(client):
     seed_video(VID_A)
     seed_stage(VID_A, "transcribe", "done")
@@ -322,16 +329,16 @@ def spawn_recorder(monkeypatch):
 
     calls = []
     original_popen = real_subprocess.Popen
+    vidcp_spawn_prefix = [sys.executable, "-m", "vidcp"]
 
     def fake_popen(cmd, **kwargs):
-        # Only record and mock _spawn_ingest calls (which have start_new_session=True)
-        if kwargs.get("start_new_session"):
+        # Record and fake any vidcp spawn regardless of kwargs, so a refactor that
+        # drops start_new_session can't silently spawn a real detached process.
+        # subprocess.run (ffprobe's internals via is_media_file) delegates to
+        # Popen too and needs the real one, with full context-manager behavior.
+        if cmd[:3] == vidcp_spawn_prefix:
             calls.append((cmd, kwargs))
-            mock = MagicMock()
-            mock.__enter__ = MagicMock(return_value=mock)
-            mock.__exit__ = MagicMock(return_value=None)
-            return mock
-        # For other calls (like ffprobe), use the real Popen
+            return MagicMock()
         return original_popen(cmd, **kwargs)
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
@@ -347,6 +354,7 @@ async def test_ingest_new_file_spawns_detached_ingest(client, spawn_recorder, sp
     ((cmd, kwargs),) = spawn_recorder
     assert cmd == [sys.executable, "-m", "vidcp", "ingest", str(speech_fixture)]
     assert kwargs["start_new_session"] is True
+    assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
 
