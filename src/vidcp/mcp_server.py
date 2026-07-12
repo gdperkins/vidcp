@@ -85,7 +85,26 @@ def get_video(video_id: str) -> dict:
     return payload
 
 
-_TOOLS = (list_videos, get_video)
+def search(
+    query: str, video_id: str | None = None, kind: str | None = None, limit: int = 10
+) -> dict:
+    """Hybrid keyword + semantic search over transcripts and on-screen (OCR) text.
+
+    Returns timestamped, scored hits. kind filters to 'transcript' or 'ocr';
+    video_id (any unique prefix) restricts to one video. Follow up with
+    get_transcript() around a hit's ts_s, or get_keyframe() to see the moment.
+    """
+    if kind is not None and kind not in ("transcript", "ocr"):
+        _fail(f"unknown kind '{kind}'", "choose one of: transcript, ocr")
+    from vidcp.search import search as run_search
+
+    with _library() as conn:
+        vid = _resolve(conn, video_id) if video_id else None
+        hits = run_search(conn, query, video_id=vid, kind=kind, limit=limit)
+    return {"hits": [hit.model_dump(mode="json") for hit in hits]}
+
+
+_TOOLS = (search, list_videos, get_video)
 
 
 def create_server() -> FastMCP:

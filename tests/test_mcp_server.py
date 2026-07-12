@@ -74,6 +74,23 @@ def seed_stage(video_id, stage, status, error=None):
         conn.close()
 
 
+def seed_segment(video_id, start_s, end_s, text) -> int:
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO segments(video_id, start_s, end_s, text) VALUES (?,?,?,?)",
+            (video_id, start_s, end_s, text),
+        )
+        conn.execute(
+            "INSERT INTO fts(text, video_id, kind, ref_id, ts_s) VALUES (?,?,?,?,?)",
+            (text, video_id, "transcript", cur.lastrowid, start_s),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
 async def test_lists_expected_tools(client):
     tools = {tool.name for tool in (await client.list_tools()).tools}
     assert "list_videos" in tools
@@ -119,6 +136,35 @@ async def test_get_video_ambiguous_prefix_errors(client):
     seed_video("a" + "d" * 63)
     result = await client.call_tool("get_video", {"video_id": "a"})
     assert "ambiguous" in error_text(result)
+
+
+async def test_search_returns_fts_hit(client):
+    seed_video(VID_A)
+    seed_segment(VID_A, 5.0, 9.0, "neural networks are discussed here")
+    payload = result_payload(await client.call_tool("search", {"query": "neural"}))
+    assert payload["hits"]
+    hit = payload["hits"][0]
+    assert hit["video_id"] == VID_A
+    assert hit["kind"] == "transcript"
+    assert hit["ts_s"] == 5.0
+    assert "neural" in hit["snippet"]
+
+
+async def test_search_rejects_unknown_kind(client):
+    result = await client.call_tool("search", {"query": "x", "kind": "faces"})
+    assert "unknown kind 'faces'" in error_text(result)
+
+
+async def test_search_restricts_to_video_id_prefix(client):
+    seed_video(VID_A, title="a")
+    seed_video(VID_B, title="b")
+    seed_segment(VID_A, 1.0, 2.0, "quantum computing intro")
+    seed_segment(VID_B, 3.0, 4.0, "quantum computing outro")
+    payload = result_payload(
+        await client.call_tool("search", {"query": "quantum", "video_id": VID_A[:8]})
+    )
+    assert payload["hits"]
+    assert all(h["video_id"] == VID_A for h in payload["hits"])
 
 
 def test_python_dash_m_vidcp_runs():
