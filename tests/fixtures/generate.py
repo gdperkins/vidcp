@@ -22,6 +22,8 @@ _FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/System/Library/Fonts/Helvetica.ttc",
     "/Library/Fonts/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ]
 
 
@@ -36,7 +38,9 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     for candidate in _FONT_CANDIDATES:
         if Path(candidate).exists():
             return ImageFont.truetype(candidate, size)
-    raise RuntimeError("no usable TrueType font found for fixture generation")
+    # Pillow >= 10.1 bundles a scalable font (Aileron), so text fixtures work
+    # on hosts with no system fonts at all (e.g. minimal CI runners).
+    return ImageFont.load_default(size=size)
 
 
 def _make_color(path: Path) -> None:

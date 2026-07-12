@@ -136,20 +136,24 @@ class KeyframesStage(Stage):
                     (str(out), phash_str, scene_id),
                 )
         # Backfill: a scene whose midpoint frame was phash-deduped still gets a
-        # keyframe — the kept frame nearest its midpoint.
+        # keyframe — the kept frame nearest its midpoint. Referencing the outer
+        # UPDATE table inside a subquery's ORDER BY ("scenes.start_s") raises
+        # "no such column" on SQLite <= 3.47 (CI's bundled build), so rank the
+        # candidate frames in a joined subquery instead.
         conn.execute(
             """
-            UPDATE scenes SET
-                keyframe_path = (
-                    SELECT path FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1
-                    ORDER BY abs(frames.ts_s - (scenes.start_s + scenes.end_s) / 2) LIMIT 1
-                ),
-                phash = (
-                    SELECT phash FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1
-                    ORDER BY abs(frames.ts_s - (scenes.start_s + scenes.end_s) / 2) LIMIT 1
-                )
-            WHERE video_id = ? AND keyframe_path IS NULL
-              AND EXISTS (SELECT 1 FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1)
+            UPDATE scenes SET keyframe_path = pick.path, phash = pick.phash
+            FROM (
+                SELECT f.scene_id AS scene_id, f.path AS path, f.phash AS phash,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY f.scene_id
+                           ORDER BY abs(f.ts_s - (s.start_s + s.end_s) / 2)
+                       ) AS rn
+                FROM frames f JOIN scenes s ON s.id = f.scene_id
+                WHERE f.kept = 1 AND s.video_id = ?
+            ) AS pick
+            WHERE pick.scene_id = scenes.id AND pick.rn = 1
+              AND scenes.keyframe_path IS NULL
             """,
             (ctx.video_id,),
         )
