@@ -77,6 +77,15 @@ def _short_ts(value: str | None) -> str:
     return (value or "")[:19].replace("T", " ") if value else "-"
 
 
+def _artifact_counts(conn, video_id: str) -> dict[str, int]:
+    counts = {}
+    for table in ("scenes", "frames", "segments", "ocr_blocks"):
+        counts[table] = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE video_id=?", (video_id,)
+        ).fetchone()[0]
+    return counts
+
+
 def _print_stages_table(stage_states: list[StageState]) -> None:
     table = Table(title="stages")
     for column in ("stage", "status", "started", "finished", "error"):
@@ -370,6 +379,7 @@ def inspect(
         vid = resolve_id(conn, video_id)
         row = conn.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
         video = Video.from_row(row)
+        counts = _artifact_counts(conn, vid)
         stage_states = [
             StageState.from_row(r)
             for r in conn.execute(
@@ -381,6 +391,7 @@ def inspect(
 
     if json_output:
         payload = video.model_dump(mode="json")
+        payload["counts"] = counts
         if stages:
             payload["stages"] = [s.model_dump(mode="json") for s in stage_states]
         print(json.dumps(payload))
@@ -393,6 +404,8 @@ def inspect(
     data.pop("meta", None)  # verbose ffprobe blob; omit from the human view
     for key, value in data.items():
         table.add_row(key, "-" if value is None else str(value))
+    for key, value in counts.items():
+        table.add_row(key, str(value))
     console.print(table)
     if stages:
         _print_stages_table(stage_states)
