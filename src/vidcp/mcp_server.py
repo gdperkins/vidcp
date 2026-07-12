@@ -10,6 +10,8 @@ Nothing here may write to stdout — stdout is the MCP stdio transport.
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NoReturn
@@ -21,6 +23,7 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.library import artifact_counts, resolve_id
 from vidcp.models import StageState, Video
+from vidcp.store import sha256_file
 
 _INSTRUCTIONS = (
     "Query a local vidcp video library: hybrid search over transcripts and "
@@ -193,7 +196,52 @@ def get_keyframe(video_id: str, ts_s: float):
     ]
 
 
-_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes, get_keyframe)
+def _spawn_ingest(path: Path, force: bool) -> None:
+    """Launch a detached background ingest; the child owns all DB/store writes."""
+    cmd = [sys.executable, "-m", "vidcp", "ingest"]
+    if force:
+        cmd.append("--force")
+    cmd.append(str(path))
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def ingest(path: str) -> dict:
+    """Ingest a video file into the library (asynchronous).
+
+    Returns immediately with the video id; probing, transcription, OCR, and
+    embedding continue in a background process. Poll get_video() until every
+    stage is 'done' or 'skipped'.
+    """
+    file = Path(path).expanduser()
+    if not file.is_file():
+        _fail(f"file not found: {file}")
+    from vidcp.pipeline.stages.probe import is_media_file
+
+    if not is_media_file(file):
+        _fail(f"not a recognised media file: {file}")
+    video_id = sha256_file(file)
+    with _library() as conn:
+        exists = conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is not None
+        # embed is the DAG's terminal stage — it can only be done/skipped after
+        # every other stage finished, so it doubles as a completeness check.
+        embed = conn.execute(
+            "SELECT status FROM stages WHERE video_id=? AND stage='embed'", (video_id,)
+        ).fetchone()
+    if exists and embed is not None and embed["status"] in ("done", "skipped"):
+        return {"video_id": video_id, "short_id": video_id[:8], "status": "already_ingested"}
+    # A pre-existing row with an unfinished pipeline needs --force: without it
+    # the CLI child would hit its already-ingested check and skip the pipeline.
+    _spawn_ingest(file, force=exists)
+    return {"video_id": video_id, "short_id": video_id[:8], "status": "started"}
+
+
+_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes, get_keyframe, ingest)
 
 
 def create_server() -> FastMCP:

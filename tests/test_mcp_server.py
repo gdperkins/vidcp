@@ -314,6 +314,93 @@ async def test_get_keyframe_missing_file_errors(client, tmp_path):
     assert "keyframe file missing" in error_text(result)
 
 
+@pytest.fixture
+def spawn_recorder(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import subprocess as real_subprocess
+
+    calls = []
+    original_popen = real_subprocess.Popen
+
+    def fake_popen(cmd, **kwargs):
+        # Only record and mock _spawn_ingest calls (which have start_new_session=True)
+        if kwargs.get("start_new_session"):
+            calls.append((cmd, kwargs))
+            mock = MagicMock()
+            mock.__enter__ = MagicMock(return_value=mock)
+            mock.__exit__ = MagicMock(return_value=None)
+            return mock
+        # For other calls (like ffprobe), use the real Popen
+        return original_popen(cmd, **kwargs)
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    return calls
+
+
+async def test_ingest_new_file_spawns_detached_ingest(client, spawn_recorder, speech_fixture):
+    from vidcp.store import sha256_file
+
+    payload = result_payload(await client.call_tool("ingest", {"path": str(speech_fixture)}))
+    assert payload["status"] == "started"
+    assert payload["video_id"] == sha256_file(speech_fixture)
+    ((cmd, kwargs),) = spawn_recorder
+    assert cmd == [sys.executable, "-m", "vidcp", "ingest", str(speech_fixture)]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] == subprocess.DEVNULL
+    assert kwargs["stderr"] == subprocess.DEVNULL
+
+
+async def test_ingest_partial_prior_run_resumes_with_force(client, spawn_recorder, speech_fixture):
+    from vidcp.store import sha256_file
+
+    video_id = sha256_file(speech_fixture)
+    seed_video(video_id)
+    seed_stage(video_id, "probe", "done")  # crashed mid-pipeline: embed never completed
+    payload = result_payload(await client.call_tool("ingest", {"path": str(speech_fixture)}))
+    assert payload["status"] == "started"
+    ((cmd, _),) = spawn_recorder
+    assert cmd == [sys.executable, "-m", "vidcp", "ingest", "--force", str(speech_fixture)]
+
+
+async def test_ingest_complete_video_short_circuits(client, spawn_recorder, speech_fixture):
+    from vidcp.store import sha256_file
+
+    video_id = sha256_file(speech_fixture)
+    seed_video(video_id)
+    seed_stage(video_id, "embed", "done")
+    payload = result_payload(await client.call_tool("ingest", {"path": str(speech_fixture)}))
+    assert payload["status"] == "already_ingested"
+    assert spawn_recorder == []
+
+
+async def test_ingest_missing_file_errors(client, spawn_recorder):
+    result = await client.call_tool("ingest", {"path": "/nope/missing.mp4"})
+    assert "file not found" in error_text(result)
+    assert spawn_recorder == []
+
+
+async def test_ingest_non_media_file_errors(client, spawn_recorder, tmp_path):
+    bogus = tmp_path / "notes.mp4"
+    bogus.write_text("definitely not a video")
+    result = await client.call_tool("ingest", {"path": str(bogus)})
+    assert "not a recognised media file" in error_text(result)
+    assert spawn_recorder == []
+
+
+async def test_all_seven_tools_registered(client):
+    tools = {tool.name for tool in (await client.list_tools()).tools}
+    assert tools == {
+        "search",
+        "list_videos",
+        "get_video",
+        "get_transcript",
+        "list_scenes",
+        "get_keyframe",
+        "ingest",
+    }
+
+
 def test_python_dash_m_vidcp_runs():
     result = subprocess.run(
         [sys.executable, "-m", "vidcp", "--help"], capture_output=True, text=True
