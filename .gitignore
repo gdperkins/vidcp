@@ -21,3 +21,6 @@ dist/
 tests/fixtures/color.mp4
 tests/fixtures/cuts.mp4
 tests/fixtures/text.mp4
+
+# Sample videos at repo root (never commit local test media)
+/*.mp4
