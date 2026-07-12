@@ -75,3 +75,9 @@ def test_doctor_creates_migration_001_database():
     finally:
         conn.close()
     assert MIGRATION_001_TABLES <= names
+
+
+def test_mcp_command_registered():
+    result = runner.invoke(app, ["mcp", "--help"])
+    assert result.exit_code == 0
+    assert "MCP server" in result.output

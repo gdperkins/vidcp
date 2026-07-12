@@ -757,6 +757,17 @@ def export(
         print(content)
 
 
+@app.command("mcp")
+def mcp_command() -> None:
+    """Run the MCP server over stdio, exposing the library to agents.
+
+    Example: claude mcp add vidcp -- vidcp mcp
+    """
+    from vidcp.mcp_server import create_server
+
+    create_server().run()
+
+
 # --------------------------------------------------------------------------- #
 # console-script entrypoint
 # --------------------------------------------------------------------------- #

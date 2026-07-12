@@ -46,6 +46,20 @@ probe ─┬─ audio ─ transcribe ─┐
 Everything lands in `~/.vidcp/library.db` (transcript + OCR text in FTS5, vectors
 in a `sqlite-vec` table); source files and keyframes live under `~/.vidcp/store/`.
 
+## MCP server
+
+`vidcp mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio so
+agents can query the library directly:
+
+```bash
+claude mcp add vidcp -- vidcp mcp
+```
+
+Tools: `search`, `list_videos`, `get_video`, `get_transcript`, `list_scenes`,
+`get_keyframe` (returns the nearest stored keyframe as an image), and `ingest`.
+`ingest` returns immediately and processing continues in a background process —
+poll `get_video` until every stage reports `done` or `skipped`.
+
 ## Configuration
 
 Settings load from defaults → `~/.vidcp/config.toml` → `VIDCP_*` environment
