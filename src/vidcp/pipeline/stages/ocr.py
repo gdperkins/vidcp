@@ -57,12 +57,13 @@ class OcrStage(Stage):
         conn.commit()
 
     def run(self, ctx: VideoContext) -> None:
+        # Clean first so that disabling OCR actually clears prior OCR rows
+        # (rather than leaving them stale when we skip).
+        self.clean(ctx)
         if not ctx.settings.ocr_enabled:
             raise StageSkipped("ocr disabled")
 
         conn = ctx.conn
-        self.clean(ctx)  # idempotent: clear prior OCR rows
-
         frames = conn.execute(
             """
             SELECT f.scene_id, f.ts_s, f.path, s.end_s AS scene_end

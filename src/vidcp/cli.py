@@ -487,7 +487,12 @@ def delete(
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
-        # FK cascade removes stages/scenes/segments/ocr_blocks.
+        # fts and vec are virtual tables and can't carry FK constraints, so their
+        # rows must be deleted explicitly (leaving them orphaned would inflate
+        # stats and, via rowid reuse, mis-attribute future search hits).
+        conn.execute("DELETE FROM fts WHERE video_id=?", (vid,))
+        conn.execute("DELETE FROM vec WHERE video_id=?", (vid,))
+        # FK cascade removes stages/scenes/segments/ocr_blocks/frames.
         conn.execute("DELETE FROM videos WHERE id=?", (vid,))
         conn.commit()
     finally:
@@ -769,11 +774,11 @@ def export(
 def main() -> None:
     """Run the CLI, rendering user-facing errors instead of tracebacks.
 
-    This is the ``[project.scripts]`` target rather than the bare Typer ``app``:
-    with ``pretty_exceptions_enable=False`` Typer re-raises ``ClickException``
-    (including :class:`~vidcp.errors.VidcpError`) instead of calling ``.show()``,
-    so we render it here. Unexpected exceptions print a short message unless
-    ``--debug`` was passed.
+    This is the ``[project.scripts]`` target rather than the bare Typer ``app``
+    so that *unexpected* exceptions become a short friendly message (exit 1)
+    unless ``--debug`` was passed. ``VidcpError`` (a ``ClickException``) is
+    already rendered by Click's standalone handling via its ``.show()``; the
+    ``except ClickException`` branch below is a defensive fallback.
     """
     try:
         app()

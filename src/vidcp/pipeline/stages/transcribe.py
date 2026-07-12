@@ -48,30 +48,31 @@ class TranscribeStage(Stage):
         model = _load_model(ctx.settings.whisper_model, "cpu", "int8")
         segments, info = model.transcribe(str(wav), vad_filter=True, word_timestamps=True)
 
-        conn = ctx.conn
+        # Drain the generator FIRST — iterating drives the (slow) transcription.
+        # Doing it before any INSERT means we never hold the WAL write lock across
+        # inference, so parallel stages (keyframes/ocr) don't hit busy_timeout.
         raw_segments = []
-        for seg in segments:  # iterating drives the actual transcription
+        rows = []  # (start, end, text, confidence, words_json)
+        for seg in segments:
             text = (seg.text or "").strip()
             words = [{"w": w.word, "s": w.start, "e": w.end} for w in (seg.words or [])]
             raw_segments.append({"start": seg.start, "end": seg.end, "text": text, "words": words})
-            if not text:
-                continue
+            if text:
+                rows.append(
+                    (seg.start, seg.end, text, _confidence(seg.avg_logprob), json.dumps(words))
+                )
+
+        conn = ctx.conn
+        for start, end, text, confidence, words_json in rows:
             cur = conn.execute(
                 "INSERT INTO segments(video_id, start_s, end_s, text, confidence, words) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    ctx.video_id,
-                    seg.start,
-                    seg.end,
-                    text,
-                    _confidence(seg.avg_logprob),
-                    json.dumps(words),
-                ),
+                (ctx.video_id, start, end, text, confidence, words_json),
             )
             conn.execute(
                 "INSERT INTO fts(text, video_id, kind, ref_id, ts_s) "
                 "VALUES (?, ?, 'transcript', ?, ?)",
-                (text, ctx.video_id, cur.lastrowid, seg.start),
+                (text, ctx.video_id, cur.lastrowid, start),
             )
         conn.commit()
 

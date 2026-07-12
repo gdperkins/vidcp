@@ -53,6 +53,9 @@ def test_hybrid_search_over_all_fixtures(fixtures, speech_fixture):
         id_hits = search(conn, C.SPEECH_KEYWORD, video_id=speech_vid, limit=5)
         assert id_hits
         assert all(h.video_id == speech_vid for h in id_hits)
+
+        # A term-less query (punctuation only) matches nothing on both legs.
+        assert search(conn, "...", limit=5) == []
     finally:
         conn.close()
 

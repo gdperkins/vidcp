@@ -11,6 +11,20 @@ from vidcp.errors import VidcpError
 from vidcp.pipeline.base import Stage, VideoContext
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_fraction(value: str | None) -> float | None:
     """Parse ffprobe rate strings like ``"15/1"`` into a float."""
     if not value:
@@ -71,10 +85,8 @@ class ProbeStage(Stage):
         video = next((s for s in streams if s.get("codec_type") == "video"), None)
         audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
-        duration = fmt.get("duration")
-        duration_s = float(duration) if duration is not None else None
-        size = fmt.get("size")
-        size_bytes = int(size) if size is not None else None
+        duration_s = _safe_float(fmt.get("duration"))
+        size_bytes = _safe_int(fmt.get("size"))
         created_at = (fmt.get("tags") or {}).get("creation_time")
 
         width = video.get("width") if video else None

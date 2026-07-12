@@ -72,6 +72,10 @@ def _has_vectors(conn, video_id, kind) -> bool:
 
 
 def _vec_leg(conn, query, video_id, kind, embed_model):
+    # A term-less query (empty / punctuation-only) matches nothing — don't pay
+    # the model-load cost or return arbitrary nearest neighbours.
+    if not _tokens(query):
+        return []
     # Skip the (model-loading) vector leg when there is nothing to match.
     if not _has_vectors(conn, video_id, kind):
         return []
@@ -102,12 +106,13 @@ def _rrf(fts_rows, vec_rows):
 
 
 def _snippet(text: str, query: str) -> str:
-    low = text.lower()
+    # Locate against the original text (case-insensitively) so the slice indices
+    # stay valid even when lower-casing changes length (e.g. Turkish İ, ligatures).
     pos = -1
     for token in _tokens(query):
-        found = low.find(token)
-        if found != -1:
-            pos = found
+        match = re.search(re.escape(token), text, re.IGNORECASE)
+        if match:
+            pos = match.start()
             break
     if pos == -1:
         return text[:_SNIPPET_FALLBACK].strip()

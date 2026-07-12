@@ -19,7 +19,7 @@ def _scene_timestamps(start: float, end: float, interval: float) -> list[tuple[f
     """
     midpoint = (start + end) / 2
     samples = [(midpoint, True)]
-    if (end - start) > interval:
+    if interval > 0 and (end - start) > interval:
         t = start + interval
         while t < end:
             if abs(t - midpoint) > 0.5:
@@ -104,24 +104,53 @@ class KeyframesStage(Stage):
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda job: _extract_frame(src, job[1], job[3]), jobs))
 
-        # Walk in time order; drop frames within phash distance of the last kept.
+        # Pass 1 (no DB): hash each frame and dedupe against the last kept one.
+        # Keeping the heavy phash work out of the write transaction avoids
+        # holding the WAL write lock while parallel stages are writing.
+        kept: list[tuple[int, float, bool, Path, str]] = []
         last_kept = None
         for scene_id, ts, is_mid, out in jobs:
             if not out.exists():
                 continue
-            phash = imagehash.phash(Image.open(out))
+            try:
+                phash = imagehash.phash(Image.open(out))
+            except (OSError, SyntaxError, ValueError):
+                out.unlink(missing_ok=True)  # unreadable/corrupt frame -> skip
+                continue
             if last_kept is not None and (phash - last_kept) <= settings.phash_max_distance:
                 out.unlink(missing_ok=True)  # duplicate -> delete JPEG, no row
                 continue
             last_kept = phash
+            kept.append((scene_id, ts, is_mid, out, str(phash)))
+
+        # Pass 2 (short transaction): insert rows + scene keyframe pointers.
+        for scene_id, ts, is_mid, out, phash_str in kept:
             conn.execute(
                 "INSERT INTO frames(video_id, scene_id, ts_s, path, phash, kept) "
                 "VALUES (?, ?, ?, ?, ?, 1)",
-                (ctx.video_id, scene_id, ts, str(out), str(phash)),
+                (ctx.video_id, scene_id, ts, str(out), phash_str),
             )
             if is_mid:
                 conn.execute(
                     "UPDATE scenes SET keyframe_path=?, phash=? WHERE id=?",
-                    (str(out), str(phash), scene_id),
+                    (str(out), phash_str, scene_id),
                 )
+        # Backfill: a scene whose midpoint frame was phash-deduped still gets a
+        # keyframe — the kept frame nearest its midpoint.
+        conn.execute(
+            """
+            UPDATE scenes SET
+                keyframe_path = (
+                    SELECT path FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1
+                    ORDER BY abs(frames.ts_s - (scenes.start_s + scenes.end_s) / 2) LIMIT 1
+                ),
+                phash = (
+                    SELECT phash FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1
+                    ORDER BY abs(frames.ts_s - (scenes.start_s + scenes.end_s) / 2) LIMIT 1
+                )
+            WHERE video_id = ? AND keyframe_path IS NULL
+              AND EXISTS (SELECT 1 FROM frames WHERE frames.scene_id = scenes.id AND frames.kept = 1)
+            """,
+            (ctx.video_id,),
+        )
         conn.commit()

@@ -107,12 +107,22 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
-    current = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0]
-    for version, sql in enumerate(MIGRATIONS, start=1):
-        if version > current:
-            conn.executescript(sql)
-            conn.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
-    conn.commit()
+    # Take the write lock up front and re-check the version inside the
+    # transaction, so two brand-new processes can't both apply migration 001.
+    # (executescript would auto-commit and defeat this, so run statements one by
+    # one — the migration SQL is plain DDL with no embedded semicolons.)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0]
+        for version, sql in enumerate(MIGRATIONS, start=1):
+            if version > current:
+                for statement in filter(str.strip, sql.split(";")):
+                    conn.execute(statement)
+                conn.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -129,7 +139,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     # Let concurrent writers (parallel stages) wait for the write lock instead
     # of failing with "database is locked".
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     _load_sqlite_vec(conn)
     _apply_migrations(conn)
     return conn

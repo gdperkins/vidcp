@@ -80,39 +80,40 @@ def _upsert(conn, video_id, stage, status, config_hash, started, finished, error
 
 
 def _run_stage(video_id, stage, settings, config_hash):
-    """Worker: execute a stage on its own connection, recording status."""
-    conn = connect()
+    """Worker: execute a stage on its own connection, recording status.
+
+    Never raises — any error (including bookkeeping/DB errors) is converted to a
+    ``("failed", ...)`` outcome so one worker's hiccup can't abort the whole
+    pipeline (fut.result() would otherwise re-raise on the main thread).
+    """
+    try:
+        conn = connect()
+    except Exception as exc:  # pragma: no cover - connect rarely fails
+        return ("failed", f"connect failed: {exc}")
     try:
         _upsert(conn, video_id, stage.name, "running", config_hash, _now(), None, None)
         ctx = VideoContext(video_id, conn, settings)
         try:
             stage.run(ctx)
         except StageSkipped as exc:
-            conn.execute(
-                "UPDATE stages SET status='skipped', finished_at=?, error=? "
-                "WHERE video_id=? AND stage=?",
-                (_now(), str(exc), video_id, stage.name),
-            )
-            conn.commit()
-            return ("skipped", str(exc))
+            status, error = "skipped", str(exc)
         except Exception as exc:
-            conn.execute(
-                "UPDATE stages SET status='failed', finished_at=?, error=? "
-                "WHERE video_id=? AND stage=?",
-                (_now(), str(exc), video_id, stage.name),
-            )
-            conn.commit()
-            return ("failed", str(exc))
+            status, error = "failed", str(exc)
         else:
-            conn.execute(
-                "UPDATE stages SET status='done', finished_at=?, error=NULL "
-                "WHERE video_id=? AND stage=?",
-                (_now(), video_id, stage.name),
-            )
-            conn.commit()
-            return ("done", None)
+            status, error = "done", None
+        conn.execute(
+            "UPDATE stages SET status=?, finished_at=?, error=? WHERE video_id=? AND stage=?",
+            (status, _now(), error, video_id, stage.name),
+        )
+        conn.commit()
+        return (status, error)
+    except Exception as exc:  # bookkeeping/DB error around the stage
+        return ("failed", f"stage bookkeeping error: {exc}")
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def run_pipeline(
@@ -189,6 +190,10 @@ def run_pipeline(
                         and existing["status"] == "skipped"
                         and existing["config_hash"] == config_hash
                     ):
+                        # Newly skipped: clear any prior output so a stage that
+                        # used to produce rows (e.g. embed of now-disabled OCR)
+                        # doesn't leave stale data behind.
+                        by_name[stage.name].clean(ctx)
                         _upsert(
                             conn,
                             video_id,
@@ -233,8 +238,10 @@ def run_pipeline(
                     status, error = fut.result()
                     resolved[stage.name] = status
                     outcomes[stage.name] = StageOutcome(stage.name, status, error)
-                    if status == "done":
-                        reran.add(stage.name)
+                    # Any stage that actually executed (done, or skipped/failed
+                    # via a worker) may have changed its output, so it must
+                    # invalidate up-to-date dependents — not just 'done'.
+                    reran.add(stage.name)
                     notify(stage.name, status)
             elif len(resolved) < len(order):
                 break  # nothing runnable and nothing running -> stop
