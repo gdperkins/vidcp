@@ -29,7 +29,7 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.export.srt import to_srt
 from vidcp.export.vtt import to_vtt
-from vidcp.library import resolve_id
+from vidcp.library import artifact_counts, resolve_id
 from vidcp.models import SceneRow, Segment, StageState, Video
 from vidcp.pipeline import default_stages, transitive_dependents
 from vidcp.pipeline.base import VideoContext
@@ -70,15 +70,6 @@ def _expand_paths(raw: list[str]) -> list[Path]:
 
 def _short_ts(value: str | None) -> str:
     return (value or "")[:19].replace("T", " ") if value else "-"
-
-
-def _artifact_counts(conn, video_id: str) -> dict[str, int]:
-    counts = {}
-    for table in ("scenes", "frames", "segments", "ocr_blocks"):
-        counts[table] = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE video_id=?", (video_id,)
-        ).fetchone()[0]
-    return counts
 
 
 def _dir_size(path: Path) -> int:
@@ -443,7 +434,7 @@ def inspect(
         vid = resolve_id(conn, video_id)
         row = conn.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
         video = Video.from_row(row)
-        counts = _artifact_counts(conn, vid)
+        counts = artifact_counts(conn, vid)
         stage_states = [
             StageState.from_row(r)
             for r in conn.execute(

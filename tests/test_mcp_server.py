@@ -60,6 +60,20 @@ def seed_video(video_id=VID_A, title="talk", duration_s=60.0) -> str:
     return video_id
 
 
+def seed_stage(video_id, stage, status, error=None):
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO stages(video_id, stage, status, error) VALUES (?,?,?,?) "
+            "ON CONFLICT(video_id, stage) DO UPDATE SET status=excluded.status, "
+            "error=excluded.error",
+            (video_id, stage, status, error),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def test_lists_expected_tools(client):
     tools = {tool.name for tool in (await client.list_tools()).tools}
     assert "list_videos" in tools
@@ -79,6 +93,32 @@ async def test_list_videos_returns_seeded_video(client):
     assert video["short_id"] == VID_A[:8]
     assert video["title"] == "talk"
     assert "meta" not in video
+
+
+async def test_get_video_metadata_counts_and_stages(client):
+    seed_video(VID_A, title="talk")
+    seed_stage(VID_A, "probe", "done")
+    seed_stage(VID_A, "transcribe", "failed", error="boom")
+    payload = result_payload(await client.call_tool("get_video", {"video_id": VID_A[:8]}))
+    assert payload["id"] == VID_A
+    assert payload["title"] == "talk"
+    assert payload["counts"] == {"scenes": 0, "frames": 0, "segments": 0, "ocr_blocks": 0}
+    by_stage = {s["stage"]: s for s in payload["stages"]}
+    assert by_stage["probe"]["status"] == "done"
+    assert by_stage["transcribe"]["status"] == "failed"
+    assert by_stage["transcribe"]["error"] == "boom"
+
+
+async def test_get_video_unknown_id_errors(client):
+    result = await client.call_tool("get_video", {"video_id": "deadbeef"})
+    assert "no video matches id 'deadbeef'" in error_text(result)
+
+
+async def test_get_video_ambiguous_prefix_errors(client):
+    seed_video("a" + "c" * 63)
+    seed_video("a" + "d" * 63)
+    result = await client.call_tool("get_video", {"video_id": "a"})
+    assert "ambiguous" in error_text(result)
 
 
 def test_python_dash_m_vidcp_runs():

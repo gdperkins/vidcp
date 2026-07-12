@@ -29,3 +29,13 @@ def resolve_id(conn: sqlite3.Connection, prefix: str) -> str:
             hint="use more characters to disambiguate",
         )
     return rows[0]["id"]
+
+
+def artifact_counts(conn: sqlite3.Connection, video_id: str) -> dict[str, int]:
+    """Row counts of each per-video artifact table (scenes/frames/segments/ocr_blocks)."""
+    counts = {}
+    for table in ("scenes", "frames", "segments", "ocr_blocks"):
+        counts[table] = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE video_id=?", (video_id,)
+        ).fetchone()[0]
+    return counts

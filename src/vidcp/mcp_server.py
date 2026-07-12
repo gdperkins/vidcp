@@ -17,8 +17,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from vidcp.db import connect
 from vidcp.errors import VidcpError
-from vidcp.library import resolve_id
-from vidcp.models import Video
+from vidcp.library import artifact_counts, resolve_id
+from vidcp.models import StageState, Video
 
 _INSTRUCTIONS = (
     "Query a local vidcp video library: hybrid search over transcripts and "
@@ -66,7 +66,26 @@ def list_videos() -> dict:
     return {"videos": [_video_payload(row) for row in rows]}
 
 
-_TOOLS = (list_videos,)
+def get_video(video_id: str) -> dict:
+    """Get one video's metadata, artifact counts, and per-stage pipeline status.
+
+    Poll this after ingest(): processing is finished when every stage is
+    'done' or 'skipped'; a 'failed' stage carries its error message.
+    """
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+        row = conn.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
+        counts = artifact_counts(conn, vid)
+        stage_rows = conn.execute(
+            "SELECT * FROM stages WHERE video_id=? ORDER BY stage", (vid,)
+        ).fetchall()
+    payload = _video_payload(row)
+    payload["counts"] = counts
+    payload["stages"] = [StageState.from_row(r).model_dump(mode="json") for r in stage_rows]
+    return payload
+
+
+_TOOLS = (list_videos, get_video)
 
 
 def create_server() -> FastMCP:
