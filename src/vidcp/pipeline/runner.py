@@ -4,7 +4,9 @@ Runs stages in dependency order, recording each in the ``stages`` table
 (``running`` -> ``done``/``failed``/``skipped``). Skip rules:
 
 * A stage that raises ``StageSkipped`` (e.g. audio on a silent video) is marked
-  ``skipped``, and any stage depending on a skipped stage is skipped too.
+  ``skipped``. A dependent is cascade-skipped only when *all* of its
+  dependencies were skipped ("finished" semantics) — so a stage with a mix of
+  done and skipped deps (e.g. embed after transcribe/ocr) still runs.
 * A stage already ``done``/``skipped`` with a matching ``config_hash`` is not
   re-run — unless one of its dependencies actually re-ran this invocation, so
   changing an upstream stage transparently invalidates its downstream stages.
@@ -86,8 +88,9 @@ def run_pipeline(ctx: VideoContext, stages: list[Stage]) -> list[StageOutcome]:
             (ctx.video_id, stage.name),
         ).fetchone()
 
-        # Cascade: a stage whose dependency was skipped is skipped too.
-        if any(dep_status(dep) == "skipped" for dep in stage.depends_on):
+        # Cascade: skip only when ALL dependencies were skipped (finished
+        # semantics), so a stage with a mix of done/skipped deps still runs.
+        if stage.depends_on and all(dep_status(dep) == "skipped" for dep in stage.depends_on):
             already_skipped = (
                 existing is not None
                 and existing["status"] == "skipped"

@@ -80,8 +80,21 @@ CREATE TABLE frames (
 CREATE INDEX idx_frames_video ON frames(video_id, ts_s);
 """
 
+# Migration 003 — the vec0 virtual table for hybrid search (Step 6). 384-dim
+# vectors match the all-MiniLM-L6-v2 embedding model. video_id/kind/ref_id/ts_s
+# are metadata columns (retrievable and filterable in KNN queries).
+MIGRATION_003 = """
+CREATE VIRTUAL TABLE vec USING vec0(
+  embedding float[384],
+  video_id TEXT,
+  kind TEXT,
+  ref_id INTEGER,
+  ts_s FLOAT
+);
+"""
+
 # Applied in order; the list index (1-based) is the schema version.
-MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002]
+MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003]
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:

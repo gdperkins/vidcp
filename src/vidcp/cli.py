@@ -1,11 +1,12 @@
 """vidcp command-line interface.
 
 Functional so far: ``doctor`` (Step 1); ``ingest``/``list``/``inspect``/
-``delete`` (Step 2); ``scenes`` (Step 3); ``transcript`` (Step 4). The remaining
-commands are placeholders that raise :class:`~vidcp.errors.VidcpError` ("not
-implemented yet") so they fail cleanly rather than with a traceback. Heavy
-libraries (whisper, rapidocr, sentence-transformers) are never imported at
-module load time — this keeps CLI startup fast.
+``delete`` (Step 2); ``scenes`` (Step 3); ``transcript`` (Step 4);
+``search`` (Step 6). The remaining commands are placeholders that raise
+:class:`~vidcp.errors.VidcpError` ("not implemented yet") so they fail cleanly
+rather than with a traceback. Heavy libraries (whisper, rapidocr,
+sentence-transformers) are never imported at module load time — this keeps CLI
+startup fast.
 """
 
 from __future__ import annotations
@@ -514,7 +515,33 @@ def search(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Hybrid keyword + semantic search across the library."""
-    _not_implemented("search")
+    from vidcp.search import search as run_search
+
+    if kind is not None and kind not in ("transcript", "ocr"):
+        raise VidcpError(f"unknown kind '{kind}'", hint="choose one of: transcript, ocr")
+
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id) if video_id else None
+        hits = run_search(conn, query, video_id=vid, kind=kind, limit=limit)
+    finally:
+        conn.close()
+
+    if json_output:
+        print(json.dumps([h.model_dump(mode="json") for h in hits]))
+        return
+    if not hits:
+        console.print("no matches")
+        return
+
+    table = Table(title=f"search · {query!r}")
+    table.add_column("id")
+    table.add_column("time", justify="right")
+    table.add_column("kind")
+    table.add_column("snippet", overflow="fold")
+    for hit in hits:
+        table.add_row(hit.short_id, format_duration(hit.ts_s), hit.kind, hit.snippet)
+    console.print(table)
 
 
 @app.command()

@@ -9,6 +9,7 @@ EXPECTED_TABLES = {
     "ocr_blocks",
     "frames",
     "fts",
+    "vec",
     "schema_version",
 }
 
