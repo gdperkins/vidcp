@@ -146,7 +146,17 @@ def get_transcript(video_id: str, start_s: float | None = None, end_s: float | N
     return {"video_id": vid, "segments": [dict(row) for row in rows]}
 
 
-_TOOLS = (search, list_videos, get_video, get_transcript)
+def list_scenes(video_id: str) -> dict:
+    """List detected scene boundaries (idx, start_s, end_s) for a video."""
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+        rows = conn.execute(
+            "SELECT idx, start_s, end_s FROM scenes WHERE video_id=? ORDER BY idx", (vid,)
+        ).fetchall()
+    return {"video_id": vid, "scenes": [dict(row) for row in rows]}
+
+
+_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes)
 
 
 def create_server() -> FastMCP:

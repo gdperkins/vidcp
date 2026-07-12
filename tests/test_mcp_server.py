@@ -91,6 +91,18 @@ def seed_segment(video_id, start_s, end_s, text) -> int:
         conn.close()
 
 
+def seed_scene(video_id, idx, start_s, end_s):
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO scenes(video_id, idx, start_s, end_s) VALUES (?,?,?,?)",
+            (video_id, idx, start_s, end_s),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def test_lists_expected_tools(client):
     tools = {tool.name for tool in (await client.list_tools()).tools}
     assert "list_videos" in tools
@@ -225,6 +237,22 @@ async def test_get_transcript_failed_stage_errors(client):
     seed_stage(VID_A, "transcribe", "failed", error="model exploded")
     result = await client.call_tool("get_transcript", {"video_id": VID_A})
     assert "model exploded" in error_text(result)
+
+
+async def test_list_scenes_ordered_by_idx(client):
+    seed_video(VID_A)
+    seed_scene(VID_A, 1, 10.0, 20.0)
+    seed_scene(VID_A, 0, 0.0, 10.0)
+    payload = result_payload(await client.call_tool("list_scenes", {"video_id": VID_A[:8]}))
+    assert payload["video_id"] == VID_A
+    assert [s["idx"] for s in payload["scenes"]] == [0, 1]
+    assert payload["scenes"][0] == {"idx": 0, "start_s": 0.0, "end_s": 10.0}
+
+
+async def test_list_scenes_empty_is_not_an_error(client):
+    seed_video(VID_A)
+    payload = result_payload(await client.call_tool("list_scenes", {"video_id": VID_A}))
+    assert payload["scenes"] == []
 
 
 def test_python_dash_m_vidcp_runs():
