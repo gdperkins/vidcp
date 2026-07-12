@@ -53,13 +53,6 @@ console = Console()
 _DEBUG = False
 
 
-def _not_implemented(name: str) -> None:
-    raise VidcpError(
-        f"`vidcp {name}` is not implemented yet.",
-        hint="This command is delivered in a later step of the build.",
-    )
-
-
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 
 
@@ -289,7 +282,10 @@ def _render_doctor_table(rows: list[tuple[str, Optional[bool], str]]) -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check that the environment is ready to run vidcp."""
+    """Check that the environment is ready to run vidcp.
+
+    Example: vidcp doctor
+    """
     settings = get_settings()
     rows: list[tuple[str, Optional[bool], str]] = []
 
@@ -331,7 +327,10 @@ def ingest(
     ),
     no_ocr: bool = typer.Option(False, "--no-ocr", help="Skip OCR for this run."),
 ) -> None:
-    """Ingest one or more video files into the library."""
+    """Ingest one or more video files into the library.
+
+    Example: vidcp ingest clip.mp4 ~/Movies
+    """
     if not paths:
         raise VidcpError("no paths given", hint="usage: vidcp ingest <file-or-dir> ...")
     settings = get_settings()
@@ -393,7 +392,10 @@ def ingest(
 def list_videos(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """List ingested videos."""
+    """List ingested videos.
+
+    Example: vidcp list --json
+    """
     conn = connect()
     try:
         rows = conn.execute("SELECT * FROM videos ORDER BY ingested_at DESC").fetchall()
@@ -432,7 +434,10 @@ def inspect(
     stages: bool = typer.Option(False, "--stages", help="Include the stages table."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Show details for a single video."""
+    """Show details for a single video.
+
+    Example: vidcp inspect a1b2c3d4 --stages
+    """
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
@@ -475,7 +480,10 @@ def delete(
     video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
     keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep files on disk."),
 ) -> None:
-    """Delete a video and its artifacts."""
+    """Delete a video and its artifacts.
+
+    Example: vidcp delete a1b2c3d4 --keep-artifacts
+    """
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
@@ -494,7 +502,10 @@ def scenes(
     video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """List detected scenes for a video."""
+    """List detected scenes for a video.
+
+    Example: vidcp scenes a1b2c3d4
+    """
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
@@ -533,7 +544,10 @@ def transcript(
     video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
     fmt: str = typer.Option("txt", "--format", help="Output format: txt|srt|vtt|json."),
 ) -> None:
-    """Show or export a video transcript."""
+    """Show or export a video transcript.
+
+    Example: vidcp transcript a1b2c3d4 --format srt
+    """
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
@@ -572,7 +586,10 @@ def search(
     limit: int = typer.Option(10, "--limit", help="Maximum number of results."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Hybrid keyword + semantic search across the library."""
+    """Hybrid keyword + semantic search across the library.
+
+    Example: vidcp search "machine learning" --kind transcript
+    """
     from vidcp.search import search as run_search
 
     if kind is not None and kind not in ("transcript", "ocr"):
@@ -608,7 +625,10 @@ def reindex(
     stage: Optional[str] = typer.Option(None, "--stage", help="Stage (+ dependents) to rerun."),
     all_: bool = typer.Option(False, "--all", help="Full wipe and rerun."),
 ) -> None:
-    """Rerun pipeline stages for a video."""
+    """Rerun pipeline stages for a video.
+
+    Example: vidcp reindex a1b2c3d4 --stage scenes
+    """
     settings = get_settings()
     stages = default_stages()
     by_name = {s.name: s for s in stages}
@@ -646,7 +666,10 @@ def reindex(
 def stats(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Show library statistics."""
+    """Show library statistics.
+
+    Example: vidcp stats
+    """
     settings = get_settings()
     conn = connect()
     try:
@@ -700,8 +723,42 @@ def export(
     fmt: str = typer.Option("json", "--format", help="Output format: json|markdown|srt|vtt."),
     output: Optional[str] = typer.Option(None, "-o", "--output", help="Write to a file."),
 ) -> None:
-    """Export a video's knowledge object."""
-    _not_implemented("export")
+    """Export a video's knowledge object.
+
+    Example: vidcp export a1b2c3d4 --format markdown -o notes.md
+    """
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        if fmt == "json":
+            from vidcp.export.json import to_export_dict
+
+            content = json.dumps(to_export_dict(conn, vid), indent=2)
+        elif fmt == "markdown":
+            from vidcp.export.markdown import to_markdown
+
+            content = to_markdown(conn, vid)
+        elif fmt in ("srt", "vtt"):
+            segments = [
+                Segment.from_row(r)
+                for r in conn.execute(
+                    "SELECT * FROM segments WHERE video_id=? ORDER BY start_s", (vid,)
+                )
+            ]
+            content = to_srt(segments) if fmt == "srt" else to_vtt(segments)
+        else:
+            raise VidcpError(
+                f"unknown export format '{fmt}'",
+                hint="choose one of: json, markdown, srt, vtt",
+            )
+    finally:
+        conn.close()
+
+    if output:
+        Path(output).write_text(content)
+        console.print(f"wrote {output}")
+    else:
+        print(content)
 
 
 # --------------------------------------------------------------------------- #
