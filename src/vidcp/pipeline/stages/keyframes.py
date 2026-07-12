@@ -57,6 +57,18 @@ class KeyframesStage(Stage):
     def config_fingerprint(self, settings: Settings) -> str:
         return f"interval={settings.keyframe_min_interval_s};phash={settings.phash_max_distance}"
 
+    def clean(self, ctx: VideoContext) -> None:
+        conn = ctx.conn
+        conn.execute("DELETE FROM frames WHERE video_id=?", (ctx.video_id,))
+        conn.execute(
+            "UPDATE scenes SET keyframe_path=NULL, phash=NULL WHERE video_id=?",
+            (ctx.video_id,),
+        )
+        conn.commit()
+        frames_dir = ctx.artifacts / "frames"
+        if frames_dir.exists():
+            shutil.rmtree(frames_dir)
+
     def run(self, ctx: VideoContext) -> None:
         import imagehash
         from PIL import Image
@@ -64,15 +76,8 @@ class KeyframesStage(Stage):
         conn = ctx.conn
         settings = ctx.settings
 
-        # Idempotent reset: drop prior frames (rows + files) and scene pointers.
-        conn.execute("DELETE FROM frames WHERE video_id=?", (ctx.video_id,))
-        conn.execute(
-            "UPDATE scenes SET keyframe_path=NULL, phash=NULL WHERE video_id=?",
-            (ctx.video_id,),
-        )
+        self.clean(ctx)  # idempotent reset (rows + JPEGs)
         frames_dir = ctx.artifacts / "frames"
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir)
         frames_dir.mkdir(parents=True, exist_ok=True)
 
         scenes = conn.execute(

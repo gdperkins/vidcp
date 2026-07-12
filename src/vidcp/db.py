@@ -127,6 +127,9 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Let concurrent writers (parallel stages) wait for the write lock instead
+    # of failing with "database is locked".
+    conn.execute("PRAGMA busy_timeout=5000")
     _load_sqlite_vec(conn)
     _apply_migrations(conn)
     return conn

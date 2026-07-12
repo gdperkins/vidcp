@@ -31,19 +31,24 @@ class TranscribeStage(Stage):
     def config_fingerprint(self, settings: Settings) -> str:
         return f"model={settings.whisper_model}"
 
+    def clean(self, ctx: VideoContext) -> None:
+        conn = ctx.conn
+        conn.execute("DELETE FROM fts WHERE video_id=? AND kind='transcript'", (ctx.video_id,))
+        conn.execute("DELETE FROM segments WHERE video_id=?", (ctx.video_id,))
+        conn.commit()
+        (ctx.artifacts / "transcript.json").unlink(missing_ok=True)
+
     def run(self, ctx: VideoContext) -> None:
         wav = ctx.artifacts / "audio.wav"
         if not wav.exists():
             raise StageSkipped("no audio")
 
+        self.clean(ctx)  # idempotent: clear prior transcript rows + json
+
         model = _load_model(ctx.settings.whisper_model, "cpu", "int8")
         segments, info = model.transcribe(str(wav), vad_filter=True, word_timestamps=True)
 
         conn = ctx.conn
-        # Idempotent: clear prior transcript rows (segments + their FTS rows).
-        conn.execute("DELETE FROM fts WHERE video_id=? AND kind='transcript'", (ctx.video_id,))
-        conn.execute("DELETE FROM segments WHERE video_id=?", (ctx.video_id,))
-
         raw_segments = []
         for seg in segments:  # iterating drives the actual transcription
             text = (seg.text or "").strip()

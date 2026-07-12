@@ -13,12 +13,16 @@ class ScenesStage(Stage):
     def config_fingerprint(self, settings: Settings) -> str:
         return f"threshold={settings.scene_threshold}"
 
+    def clean(self, ctx: VideoContext) -> None:
+        # Deleting scenes cascades to frames rows via FK.
+        ctx.conn.execute("DELETE FROM scenes WHERE video_id=?", (ctx.video_id,))
+        ctx.conn.commit()
+
     def run(self, ctx: VideoContext) -> None:
         from scenedetect import ContentDetector, detect
 
         conn = ctx.conn
-        # Idempotent: clearing scenes cascades to frames, so a re-run starts clean.
-        conn.execute("DELETE FROM scenes WHERE video_id=?", (ctx.video_id,))
+        self.clean(ctx)  # idempotent: start from a clean slate
 
         scene_list = detect(
             str(ctx.source_path),

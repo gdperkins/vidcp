@@ -11,6 +11,9 @@ class AudioStage(Stage):
     name = "audio"
     depends_on = ["probe"]
 
+    def clean(self, ctx: VideoContext) -> None:
+        (ctx.artifacts / "audio.wav").unlink(missing_ok=True)
+
     def run(self, ctx: VideoContext) -> None:
         row = ctx.conn.execute(
             "SELECT has_audio FROM videos WHERE id=?", (ctx.video_id,)

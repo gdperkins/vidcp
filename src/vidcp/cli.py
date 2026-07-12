@@ -2,11 +2,11 @@
 
 Functional so far: ``doctor`` (Step 1); ``ingest``/``list``/``inspect``/
 ``delete`` (Step 2); ``scenes`` (Step 3); ``transcript`` (Step 4);
-``search`` (Step 6). The remaining commands are placeholders that raise
-:class:`~vidcp.errors.VidcpError` ("not implemented yet") so they fail cleanly
-rather than with a traceback. Heavy libraries (whisper, rapidocr,
-sentence-transformers) are never imported at module load time — this keeps CLI
-startup fast.
+``search`` (Step 6); ``reindex``/``stats`` (Step 7). ``export`` is the last
+placeholder and raises :class:`~vidcp.errors.VidcpError` ("not implemented yet")
+so it fails cleanly rather than with a traceback. Heavy libraries (whisper,
+rapidocr, sentence-transformers) are never imported at module load time — this
+keeps CLI startup fast.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Optional
 import click
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from vidcp import __version__
@@ -30,7 +31,7 @@ from vidcp.export.srt import to_srt
 from vidcp.export.vtt import to_vtt
 from vidcp.library import resolve_id
 from vidcp.models import SceneRow, Segment, StageState, Video
-from vidcp.pipeline import default_stages
+from vidcp.pipeline import default_stages, transitive_dependents
 from vidcp.pipeline.base import VideoContext
 from vidcp.pipeline.runner import run_pipeline
 from vidcp.pipeline.stages.probe import is_media_file
@@ -85,6 +86,63 @@ def _artifact_counts(conn, video_id: str) -> dict[str, int]:
             f"SELECT COUNT(*) FROM {table} WHERE video_id=?", (video_id,)
         ).fetchone()[0]
     return counts
+
+
+def _dir_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _db_size(db_path: Path) -> int:
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(db_path) + suffix)
+        if candidate.exists():
+            total += candidate.stat().st_size
+    return total
+
+
+def _human_size(num: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if num < 1024 or unit == "TB":
+            return f"{int(num)} {unit}" if unit == "B" else f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} TB"
+
+
+def _run_with_progress(ctx, stages):
+    """Run the pipeline with a live Rich progress bar (disabled off a TTY)."""
+    tasks: dict[str, int] = {}
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+        disable=not console.is_terminal,
+    ) as progress:
+        for stage in stages:
+            tasks[stage.name] = progress.add_task(f"{stage.name}: pending", total=None)
+
+        def callback(name: str, event: str) -> None:
+            if name in tasks:
+                progress.update(tasks[name], description=f"{name}: {event}")
+
+        return run_pipeline(ctx, stages, progress=callback)
+
+
+def _report_failures(outcomes, video_id: str) -> bool:
+    """Print any failed stages + a retry hint. Return True if any failed."""
+    failed = [o for o in outcomes if o.status == "failed"]
+    if not failed:
+        return False
+    for outcome in failed:
+        console.print(f"[red]{outcome.name} failed:[/red] {outcome.error}")
+    console.print(
+        f"[dim]Run `vidcp reindex {video_id[:8]} --stage {failed[0].name}` to retry.[/dim]"
+    )
+    return True
 
 
 def _print_stages_table(stage_states: list[StageState]) -> None:
@@ -292,6 +350,7 @@ def ingest(
     conn = connect()
     ingested = 0
     errors = 0
+    had_failures = False
     try:
         for path in files:
             if not path.exists():
@@ -314,19 +373,18 @@ def ingest(
                     (video_id, str(path.resolve()), now_iso()),
                 )
                 conn.commit()
-            outcomes = run_pipeline(VideoContext(video_id, conn, settings), default_stages())
-            failed = [o for o in outcomes if o.status == "failed"]
-            if failed:
-                console.print(
-                    f"[red]error[/red] {path.name}: {failed[0].name} failed: {failed[0].error}"
-                )
-                errors += 1
+            outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
+            if _report_failures(outcomes, video_id):
+                console.print(f"[yellow]ingested with errors[/yellow] {video_id[:8]}  {path.name}")
+                had_failures = True
             else:
                 console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
-                ingested += 1
+            ingested += 1
     finally:
         conn.close()
 
+    if had_failures:
+        raise typer.Exit(code=2)  # partial success
     if errors and not ingested:
         raise typer.Exit(code=1)
 
@@ -547,17 +605,93 @@ def search(
 @app.command()
 def reindex(
     video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
-    stage: Optional[str] = typer.Option(None, "--stage", help="Single stage to rerun."),
+    stage: Optional[str] = typer.Option(None, "--stage", help="Stage (+ dependents) to rerun."),
     all_: bool = typer.Option(False, "--all", help="Full wipe and rerun."),
 ) -> None:
     """Rerun pipeline stages for a video."""
-    _not_implemented("reindex")
+    settings = get_settings()
+    stages = default_stages()
+    by_name = {s.name: s for s in stages}
+    if stage is not None and stage not in by_name:
+        raise VidcpError(f"unknown stage '{stage}'", hint="one of: " + ", ".join(by_name))
+
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+        ctx = VideoContext(vid, conn, settings)
+
+        if all_:
+            targets: Optional[set[str]] = {s.name for s in stages}
+        elif stage is not None:
+            targets = transitive_dependents(stages, stage)
+        else:
+            targets = None  # rerun everything not already done
+
+        if targets is not None:
+            for name in targets:
+                by_name[name].clean(ctx)
+                conn.execute("DELETE FROM stages WHERE video_id=? AND stage=?", (vid, name))
+            conn.commit()
+
+        outcomes = _run_with_progress(ctx, stages)
+    finally:
+        conn.close()
+
+    if _report_failures(outcomes, vid):
+        raise typer.Exit(code=2)
+    console.print(f"reindexed {vid[:8]}")
 
 
 @app.command()
-def stats() -> None:
+def stats(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
     """Show library statistics."""
-    _not_implemented("stats")
+    settings = get_settings()
+    conn = connect()
+    try:
+        video_count, total_duration = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(duration_s), 0) FROM videos"
+        ).fetchone()
+        scenes = conn.execute("SELECT COUNT(*) FROM scenes").fetchone()[0]
+        segments = conn.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
+        ocr_blocks = conn.execute("SELECT COUNT(*) FROM ocr_blocks").fetchone()[0]
+        vec_rows = conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0]
+    finally:
+        conn.close()
+
+    store_bytes = _dir_size(settings.store_path)
+    db_bytes = _db_size(settings.db_path)
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "videos": video_count,
+                    "total_duration_s": total_duration,
+                    "scenes": scenes,
+                    "segments": segments,
+                    "ocr_blocks": ocr_blocks,
+                    "vec_rows": vec_rows,
+                    "store_bytes": store_bytes,
+                    "db_bytes": db_bytes,
+                }
+            )
+        )
+        return
+
+    table = Table(title="vidcp stats", show_header=False)
+    table.add_column("metric", style="bold")
+    table.add_column("value", justify="right")
+    table.add_row("videos", str(video_count))
+    table.add_row("total duration", format_duration(total_duration))
+    table.add_row("scenes", str(scenes))
+    table.add_row("segments", str(segments))
+    table.add_row("ocr blocks", str(ocr_blocks))
+    table.add_row("vec rows", str(vec_rows))
+    table.add_row("store size", _human_size(store_bytes))
+    table.add_row("db size", _human_size(db_bytes))
+    console.print(table)
 
 
 @app.command()

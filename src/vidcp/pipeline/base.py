@@ -65,5 +65,12 @@ class Stage(ABC):
         raw = f"{self.name}\x00{self.config_fingerprint(settings)}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
+    def clean(self, ctx: VideoContext) -> None:
+        """Remove this stage's outputs (DB rows + artifacts).
+
+        Default is a no-op. Stages that produce persistent output override this;
+        ``run`` calls it for idempotency and ``reindex`` calls it to invalidate.
+        """
+
     @abstractmethod
     def run(self, ctx: VideoContext) -> None: ...

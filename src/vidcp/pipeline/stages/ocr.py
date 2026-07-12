@@ -50,14 +50,18 @@ class OcrStage(Stage):
     def config_fingerprint(self, settings: Settings) -> str:
         return f"ocr_enabled={settings.ocr_enabled}"
 
+    def clean(self, ctx: VideoContext) -> None:
+        conn = ctx.conn
+        conn.execute("DELETE FROM fts WHERE video_id=? AND kind='ocr'", (ctx.video_id,))
+        conn.execute("DELETE FROM ocr_blocks WHERE video_id=?", (ctx.video_id,))
+        conn.commit()
+
     def run(self, ctx: VideoContext) -> None:
         if not ctx.settings.ocr_enabled:
             raise StageSkipped("ocr disabled")
 
         conn = ctx.conn
-        # Idempotent: clear prior OCR rows (blocks + their FTS rows).
-        conn.execute("DELETE FROM fts WHERE video_id=? AND kind='ocr'", (ctx.video_id,))
-        conn.execute("DELETE FROM ocr_blocks WHERE video_id=?", (ctx.video_id,))
+        self.clean(ctx)  # idempotent: clear prior OCR rows
 
         frames = conn.execute(
             """

@@ -19,10 +19,16 @@ class EmbedStage(Stage):
     def config_fingerprint(self, settings: Settings) -> str:
         return f"model={settings.embed_model}"
 
+    def clean(self, ctx: VideoContext) -> None:
+        ctx.conn.execute("DELETE FROM vec WHERE video_id=?", (ctx.video_id,))
+        ctx.conn.commit()
+
     def run(self, ctx: VideoContext) -> None:
         import sqlite_vec
 
         conn = ctx.conn
+        self.clean(ctx)  # replace this video's vectors (also clears removed content)
+
         items: list[tuple[str, int, float, str]] = []  # (kind, ref_id, ts_s, text)
         for row in conn.execute(
             "SELECT id, start_s, text FROM segments WHERE video_id=? ORDER BY start_s",
@@ -43,8 +49,6 @@ class EmbedStage(Stage):
             [item[3] for item in items], batch_size=64, normalize_embeddings=True
         )
 
-        # Idempotent: replace this video's vectors.
-        conn.execute("DELETE FROM vec WHERE video_id=?", (ctx.video_id,))
         for (kind, ref_id, ts_s, _text), vector in zip(items, vectors):
             conn.execute(
                 "INSERT INTO vec(embedding, video_id, kind, ref_id, ts_s) VALUES (?, ?, ?, ?, ?)",
