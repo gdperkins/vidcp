@@ -428,14 +428,20 @@ def sync(
     files = _expand_paths([str(d) for d in dirs])
     stage_names = [s.name for s in default_stages()]
     plan: list[tuple[Path, str, str]] = []  # (path, video_id, action)
-    counts = {"new": 0, "resume": 0, "up_to_date": 0, "duplicate": 0}
+    counts = {"new": 0, "resume": 0, "up_to_date": 0, "duplicate": 0, "missing": 0}
     had_failures = False
+    skipped = 0
     seen: set[str] = set()
 
     conn = connect()
     try:
         for path in files:
-            video_id = sha256_file(path)
+            try:
+                video_id = sha256_file(path)
+            except OSError:
+                plan.append((path, "", "missing"))
+                counts["missing"] += 1
+                continue
             if video_id in seen:
                 action = "duplicate"
             elif conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
@@ -453,11 +459,20 @@ def sync(
                 if not json_output:
                     console.print(f"[cyan]{action:<10}[/cyan] {path}  ({video_id[:8]})")
                 continue
+            if action == "missing":
+                console.print(f"[red]skip[/red] {path}: file not found")
+                continue
             if action in ("up_to_date", "duplicate"):
                 continue
             status = _ingest_one(conn, path, settings, force=(action == "resume"))
             if status == "failed_stages":
                 had_failures = True
+            elif status == "missing":
+                console.print(f"[red]skip[/red] {path}: file not found")
+                skipped += 1
+            elif status == "not_media":
+                console.print(f"[red]skip[/red] {path}: not a recognised media file")
+                skipped += 1
     finally:
         conn.close()
 
@@ -471,16 +486,24 @@ def sync(
                     "resumed": counts["resume"],
                     "up_to_date": counts["up_to_date"],
                     "duplicates": counts["duplicate"],
+                    "missing": counts["missing"],
+                    "skipped": skipped,
                 }
             )
         )
     else:
         label = "sync (dry run)" if dry_run else "sync"
-        console.print(
+        summary = (
             f"{label}: {counts['new']} new, {counts['resume']} resumed, "
             f"{counts['up_to_date']} up to date"
-            + (f", {counts['duplicate']} duplicate" if counts["duplicate"] else "")
         )
+        if counts["duplicate"]:
+            summary += f", {counts['duplicate']} duplicate"
+        if counts["missing"]:
+            summary += f", {counts['missing']} missing"
+        if skipped:
+            summary += f", {skipped} skipped"
+        console.print(summary)
     if had_failures:
         raise typer.Exit(code=2)
 
