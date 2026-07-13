@@ -26,6 +26,7 @@ def default_stages():
     """
     from vidcp.pipeline.stages.audio import AudioStage
     from vidcp.pipeline.stages.embed import EmbedStage
+    from vidcp.pipeline.stages.embed_frames import EmbedFramesStage
     from vidcp.pipeline.stages.keyframes import KeyframesStage
     from vidcp.pipeline.stages.ocr import OcrStage
     from vidcp.pipeline.stages.probe import ProbeStage
@@ -40,4 +41,5 @@ def default_stages():
         KeyframesStage(),
         OcrStage(),
         EmbedStage(),
+        EmbedFramesStage(),
     ]
