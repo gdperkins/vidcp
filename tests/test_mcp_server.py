@@ -483,7 +483,7 @@ async def test_search_kind_visual_accepted(client, tmp_path, monkeypatch):
     assert payload["hits"][0]["frame_path"].endswith("f.jpg")
 
 
-async def test_search_rejects_unknown_kind_v2(client):
+async def test_search_rejects_unknown_kind_hint(client):
     result = await client.call_tool("search", {"query": "x", "kind": "bogus"})
     assert "transcript, ocr, visual" in error_text(result)
 
