@@ -777,9 +777,7 @@ def clip(
         start_s = parse_timestamp(from_ts)
         end_s = parse_timestamp(to_ts)
     except ValueError as exc:
-        msg = str(exc)
-        typer.echo(f"Error: {msg}", err=True)
-        raise VidcpError(msg, hint="use seconds, mm:ss, or h:mm:ss") from None
+        raise VidcpError(str(exc), hint="use seconds, mm:ss, or h:mm:ss") from None
 
     conn = connect()
     try:

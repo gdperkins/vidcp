@@ -117,4 +117,16 @@ def test_clip_command_bad_timestamp(speech_fixture):
     _seed_video_row()
     result = runner.invoke(app, ["clip", VID[:8], "--from", "bogus", "--to", "5"])
     assert result.exit_code != 0
-    assert "invalid timestamp" in result.output
+    # Typer 0.26 dispatches through its own vendored click fork (typer._click),
+    # which only recognizes its own ClickException subclass; VidcpError (a
+    # subclass of the top-level click.ClickException) is therefore never
+    # caught internally by CliRunner's command dispatch, so .show() never
+    # runs and nothing reaches result.output/result.stderr here. That's
+    # consistent with every other VidcpError assertion in this suite (see
+    # test_cli.py::test_vidcp_error_exits_nonzero_gracefully) — assert on the
+    # captured exception itself; the real console-script entrypoint (main()
+    # in cli.py) is what actually renders VidcpError.show() to stderr for
+    # users, and that path is covered by
+    # test_cli.py::test_vidcp_error_renders_friendly_not_traceback.
+    assert isinstance(result.exception, VidcpError)
+    assert "invalid timestamp" in result.exception.message.lower()
