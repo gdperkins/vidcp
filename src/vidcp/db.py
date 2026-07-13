@@ -93,8 +93,20 @@ CREATE VIRTUAL TABLE vec USING vec0(
 );
 """
 
+# Migration 004 — vec_frames for CLIP keyframe embeddings (visual search).
+# 512-dim vectors match clip-ViT-B-32; a different clip_model must share that
+# dimension or inserts will fail.
+MIGRATION_004 = """
+CREATE VIRTUAL TABLE vec_frames USING vec0(
+  embedding float[512],
+  video_id TEXT,
+  frame_id INTEGER,
+  ts_s FLOAT
+);
+"""
+
 # Applied in order; the list index (1-based) is the schema version.
-MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003]
+MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004]
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:

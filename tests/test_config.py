@@ -11,6 +11,8 @@ _ENV_VARS = [
     "VIDCP_OCR_ENABLED",
     "VIDCP_EMBED_MODEL",
     "VIDCP_LINK_MODE",
+    "VIDCP_CLIP_MODEL",
+    "VIDCP_CLIP_ENABLED",
 ]
 
 
@@ -68,3 +70,17 @@ def test_env_beats_toml(monkeypatch, tmp_path):
 def test_get_settings_is_cached():
     get_settings.cache_clear()
     assert get_settings() is get_settings()
+
+
+def test_clip_settings_defaults_and_env(monkeypatch):
+    from vidcp.config import get_settings
+
+    # conftest sets VIDCP_CLIP_ENABLED=false for the whole suite
+    assert get_settings().clip_enabled is False
+    assert get_settings().clip_model == "sentence-transformers/clip-ViT-B-32"
+
+    monkeypatch.setenv("VIDCP_CLIP_ENABLED", "true")
+    monkeypatch.setenv("VIDCP_CLIP_MODEL", "sentence-transformers/clip-ViT-B-16")
+    get_settings.cache_clear()
+    assert get_settings().clip_enabled is True
+    assert get_settings().clip_model == "sentence-transformers/clip-ViT-B-16"

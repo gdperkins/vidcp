@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     phash_max_distance: int = 6
     ocr_enabled: bool = True
     embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    clip_model: str = "sentence-transformers/clip-ViT-B-32"  # 512-dim text+image CLIP
+    clip_enabled: bool = True
     link_mode: str = "copy"  # copy|hardlink
 
     @field_validator("home", mode="after")
