@@ -309,6 +309,33 @@ def doctor() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _ingest_one(conn, path: Path, settings: Settings, force: bool) -> str:
+    """Ingest a single file. Returns:
+    'ingested' | 'failed_stages' | 'already' | 'missing' | 'not_media'."""
+    if not path.exists():
+        return "missing"
+    if not is_media_file(path):
+        return "not_media"
+    video_id = sha256_file(path)
+    existing = conn.execute("SELECT id FROM videos WHERE id=?", (video_id,)).fetchone()
+    if existing and not force:
+        console.print(f"already ingested {video_id[:8]}  ({path.name})")
+        return "already"
+    add_source(path, video_id)
+    if existing is None:
+        conn.execute(
+            "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
+            (video_id, str(path.resolve()), now_iso()),
+        )
+        conn.commit()
+    outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
+    if _report_failures(outcomes, video_id):
+        console.print(f"[yellow]ingested with errors[/yellow] {video_id[:8]}  {path.name}")
+        return "failed_stages"
+    console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
+    return "ingested"
+
+
 @app.command()
 def ingest(
     paths: Optional[list[str]] = typer.Argument(None, help="Video files or directories."),
@@ -343,33 +370,18 @@ def ingest(
     had_failures = False
     try:
         for path in files:
-            if not path.exists():
+            status = _ingest_one(conn, path, settings, force)
+            if status == "missing":
                 console.print(f"[red]skip[/red] {path}: file not found")
                 errors += 1
-                continue
-            if not is_media_file(path):
+            elif status == "not_media":
                 console.print(f"[red]skip[/red] {path}: not a recognised media file")
                 errors += 1
-                continue
-            video_id = sha256_file(path)
-            existing = conn.execute("SELECT id FROM videos WHERE id=?", (video_id,)).fetchone()
-            if existing and not force:
-                console.print(f"already ingested {video_id[:8]}  ({path.name})")
-                continue
-            add_source(path, video_id)
-            if existing is None:
-                conn.execute(
-                    "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
-                    (video_id, str(path.resolve()), now_iso()),
-                )
-                conn.commit()
-            outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
-            if _report_failures(outcomes, video_id):
-                console.print(f"[yellow]ingested with errors[/yellow] {video_id[:8]}  {path.name}")
+            elif status == "failed_stages":
                 had_failures = True
-            else:
-                console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
-            ingested += 1
+                ingested += 1
+            elif status == "ingested":
+                ingested += 1
     finally:
         conn.close()
 
