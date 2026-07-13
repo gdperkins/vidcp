@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 from vidcp.config import get_settings
+from vidcp.errors import VidcpError
 
 _CHUNK = 1024 * 1024  # 1 MB
 
@@ -51,3 +52,17 @@ def add_source(path: Path, video_id: str) -> Path:
             pass  # cross-device or unsupported -> fall back to copy
     shutil.copy2(path, dest)
     return dest
+
+
+def source_path(video_id: str) -> Path:
+    """Return the stored ``source.*`` file for a video id.
+
+    Raises ``VidcpError`` when the artifact store has no source for this id.
+    """
+    matches = sorted(artifact_dir(video_id, create=False).glob("source.*"))
+    if not matches:
+        raise VidcpError(
+            f"no source file found for {video_id[:8]}",
+            hint="the artifact store may be corrupted; re-ingest the video",
+        )
+    return matches[0]

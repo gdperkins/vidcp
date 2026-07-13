@@ -1,7 +1,10 @@
 import hashlib
 import os
 
+import pytest
+
 from vidcp.config import get_settings
+from vidcp.errors import VidcpError
 from vidcp.store import add_source, artifact_dir, sha256_file
 
 VID = "abcd1234" + "0" * 56  # 64-char id
@@ -48,3 +51,15 @@ def test_add_source_hardlink(tmp_path, monkeypatch):
     assert dest.exists()
     assert dest.name == "source.mkv"
     assert dest.samefile(src)  # hardlink shares inode
+
+
+def test_source_path_finds_stored_source(tmp_path):
+    from vidcp.store import source_path
+
+    vid = "c" * 64
+    with pytest.raises(VidcpError):
+        source_path(vid)  # nothing stored yet
+
+    dest = artifact_dir(vid) / "source.mp4"
+    dest.write_bytes(b"fake")
+    assert source_path(vid) == dest

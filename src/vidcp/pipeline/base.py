@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import ClassVar
 
 from vidcp.config import Settings
-from vidcp.errors import VidcpError
 from vidcp.store import artifact_dir
 
 
@@ -39,13 +38,9 @@ class VideoContext:
 
     @property
     def source_path(self) -> Path:
-        matches = sorted(self.artifacts.glob("source.*"))
-        if not matches:
-            raise VidcpError(
-                f"no source file found for {self.video_id[:8]}",
-                hint="the artifact store may be corrupted; re-ingest the video",
-            )
-        return matches[0]
+        from vidcp.store import source_path
+
+        return source_path(self.video_id)
 
 
 class Stage(ABC):
