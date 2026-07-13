@@ -318,9 +318,16 @@ def doctor() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _ingest_one(conn, path: Path, settings: Settings, force: bool) -> str:
+def _ingest_one(
+    conn, path: Path, settings: Settings, force: bool, console: Console = console
+) -> str:
     """Ingest a single file. Returns:
-    'ingested' | 'failed_stages' | 'already' | 'missing' | 'not_media'."""
+    'ingested' | 'failed_stages' | 'already' | 'missing' | 'not_media'.
+
+    ``console`` defaults to the module-level console; callers that need clean
+    stdout (e.g. ``sync --json``) pass a stderr console instead so these Rich
+    status lines don't land ahead of a JSON document on stdout.
+    """
     if not path.exists():
         return "missing"
     if not is_media_file(path):
@@ -330,7 +337,12 @@ def _ingest_one(conn, path: Path, settings: Settings, force: bool) -> str:
     if existing and not force:
         console.print(f"already ingested {video_id[:8]}  ({path.name})")
         return "already"
-    add_source(path, video_id)
+    # The store is content-addressed: if a source.* already exists for this id
+    # (e.g. a resume after a partial pipeline run), re-copying the bytes would
+    # be redundant work — same content, possibly a different extension, but
+    # never a second source.* file.
+    if not any(artifact_dir(video_id).glob("source.*")):
+        add_source(path, video_id)
     if existing is None:
         conn.execute(
             "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
@@ -442,6 +454,12 @@ def sync(
     skipped = 0
     seen: set[str] = set()
 
+    # In --json mode, stdout must carry only the final JSON document (so
+    # `vidcp sync --json | jq` works); route every incidental status line —
+    # skip lines, per-file dry-run lines, and _ingest_one's own lines — to
+    # stderr instead. Outside --json mode this is just the regular console.
+    err_console = Console(stderr=True) if json_output else console
+
     conn = connect()
     try:
         for path in files:
@@ -465,22 +483,23 @@ def sync(
 
         for path, video_id, action in plan:
             if dry_run:
-                if not json_output:
-                    console.print(f"[cyan]{action:<10}[/cyan] {path}  ({video_id[:8]})")
+                err_console.print(f"[cyan]{action:<10}[/cyan] {path}  ({video_id[:8]})")
                 continue
             if action == "missing":
-                console.print(f"[red]skip[/red] {path}: file not found")
+                err_console.print(f"[red]skip[/red] {path}: file not found")
                 continue
             if action in ("up_to_date", "duplicate"):
                 continue
-            status = _ingest_one(conn, path, settings, force=(action == "resume"))
+            status = _ingest_one(
+                conn, path, settings, force=(action == "resume"), console=err_console
+            )
             if status == "failed_stages":
                 had_failures = True
             elif status == "missing":
-                console.print(f"[red]skip[/red] {path}: file not found")
+                err_console.print(f"[red]skip[/red] {path}: file not found")
                 skipped += 1
             elif status == "not_media":
-                console.print(f"[red]skip[/red] {path}: not a recognised media file")
+                err_console.print(f"[red]skip[/red] {path}: not a recognised media file")
                 skipped += 1
     finally:
         conn.close()
@@ -616,9 +635,10 @@ def delete(
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
-        # fts and vec are virtual tables and can't carry FK constraints, so their
-        # rows must be deleted explicitly (leaving them orphaned would inflate
-        # stats and, via rowid reuse, mis-attribute future search hits).
+        # fts, vec, and vec_frames are virtual tables and can't carry FK
+        # constraints, so their rows must be deleted explicitly (leaving them
+        # orphaned would inflate stats and, via rowid reuse, mis-attribute
+        # future search hits).
         conn.execute("DELETE FROM fts WHERE video_id=?", (vid,))
         conn.execute("DELETE FROM vec WHERE video_id=?", (vid,))
         conn.execute("DELETE FROM vec_frames WHERE video_id=?", (vid,))

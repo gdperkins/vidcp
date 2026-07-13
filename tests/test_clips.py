@@ -75,6 +75,16 @@ def test_extract_clip_missing_source(tmp_path):
         extract_clip("e" * 64, 0.0, 1.0, tmp_path / "z.mp4")
 
 
+def test_extract_clip_ffmpeg_failure_cleans_up_partial_output(tmp_path):
+    vid = "f" * 64
+    dest = artifact_dir(vid) / "source.mp4"
+    dest.write_bytes(b"not a video")
+    out = tmp_path / "clip.mp4"
+    with pytest.raises(VidcpError):
+        extract_clip(vid, 0.0, 1.0, out)
+    assert not out.exists()
+
+
 runner = CliRunner()
 
 

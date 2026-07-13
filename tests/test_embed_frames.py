@@ -75,6 +75,26 @@ def test_embed_frames_skips_without_frames(monkeypatch):
         conn.close()
 
 
+def test_embed_frames_chunked_encoding_preserves_order(tmp_path, monkeypatch):
+    """Chunking the encode loop must not drop or misalign rows across chunk
+    boundaries: seed 3 frames with a chunk size of 2 (a partial final chunk)."""
+    monkeypatch.setenv("VIDCP_CLIP_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr("vidcp.pipeline.stages.embed_frames.load_model", lambda name: _StubClip())
+    monkeypatch.setattr("vidcp.pipeline.stages.embed_frames._ENCODE_BATCH", 2)
+    conn = connect()
+    try:
+        _seed(conn, tmp_path, n_frames=3)
+        EmbedFramesStage().run(VideoContext(VID, conn, get_settings()))
+        rows = conn.execute(
+            "SELECT frame_id, ts_s FROM vec_frames WHERE video_id=? ORDER BY ts_s", (VID,)
+        ).fetchall()
+        assert len(rows) == 3
+        assert [r["ts_s"] for r in rows] == [0.0, 1.0, 2.0]
+    finally:
+        conn.close()
+
+
 def test_embed_frames_registered_in_default_stages():
     from vidcp.pipeline import default_stages, transitive_dependents
 

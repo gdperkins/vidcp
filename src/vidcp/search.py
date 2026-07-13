@@ -1,7 +1,7 @@
-"""Hybrid search: an FTS keyword leg and a vector leg fused with RRF.
+"""Hybrid search: FTS keyword, text vector, and CLIP visual legs fused with RRF.
 
-The two legs are combined with Reciprocal Rank Fusion so keyword-exact and
-semantically-similar hits both surface, ranked together.
+The three legs are combined with Reciprocal Rank Fusion so keyword-exact,
+semantically-similar, and visually-similar hits all surface, ranked together.
 """
 
 from __future__ import annotations
@@ -108,8 +108,10 @@ def _vec_leg(conn, query, video_id, kind, embed_model):
 
 def _visual_leg(conn, query, video_id, kind, clip_model):
     # Only contributes when visual hits are wanted and exist; loading the CLIP
-    # model is deferred past every cheap bail-out.
-    if kind in ("transcript", "ocr"):
+    # model is deferred past every cheap bail-out. Anything other than the
+    # unfiltered case or an explicit "visual" request is excluded, so an
+    # unvalidated caller passing a bogus kind doesn't get visual-only results.
+    if kind not in (None, "visual"):
         return []
     if not _tokens(query):
         return []

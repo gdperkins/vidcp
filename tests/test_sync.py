@@ -12,6 +12,7 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.library import pipeline_complete
 from vidcp.pipeline import default_stages
+from vidcp.store import artifact_dir
 
 runner = CliRunner()
 
@@ -44,7 +45,7 @@ def test_sync_ingests_then_reports_up_to_date(tmp_path, fixtures):
 
     second = runner.invoke(app, ["sync", "--no-ocr", "--json", str(d)])
     assert second.exit_code == 0, second.output
-    data = json.loads(second.output)
+    data = json.loads(second.stdout)
     assert data["new"] == 0
     assert data["up_to_date"] == 1
 
@@ -99,12 +100,42 @@ def test_sync_resumes_incomplete_pipeline(tmp_path, fixtures):
 
     second = runner.invoke(app, ["sync", "--no-ocr", "--json", str(d)])
     assert second.exit_code == 0, second.output
-    # _ingest_one prints its own "ingested ..." line ahead of the JSON summary
-    # regardless of --json, so the JSON payload is the final line of output.
-    data = json.loads(second.output.strip().splitlines()[-1])
+    # --json routes _ingest_one's own "ingested ..." line to stderr, so stdout
+    # carries only the JSON document (`vidcp sync --json | jq` stays valid).
+    # Typer's CliRunner mixes stdout+stderr into `.output`, so use `.stdout`
+    # (the isolated stream) to parse it here.
+    data = json.loads(second.stdout)
     actions = {f["path"]: f["action"] for f in data["files"]}
     assert actions[str(d / "color.mp4")] == "resume"
     assert data["resumed"] == 1
+
+    conn = connect()
+    stage_names = [s.name for s in default_stages()]
+    assert pipeline_complete(conn, vid, stage_names)
+    conn.close()
+
+
+def test_sync_resume_does_not_recopy_source(tmp_path, fixtures):
+    d = _video_dir(tmp_path, fixtures)
+    first = runner.invoke(app, ["sync", "--no-ocr", str(d)])
+    assert first.exit_code == 0, first.output
+
+    conn = connect()
+    vid = conn.execute("SELECT id FROM videos").fetchone()["id"]
+    conn.close()
+
+    source = next(artifact_dir(vid).glob("source.*"))
+    mtime_before = source.stat().st_mtime_ns
+
+    conn = connect()
+    conn.execute("DELETE FROM stages WHERE stage='embed'")
+    conn.commit()
+    conn.close()
+
+    second = runner.invoke(app, ["sync", "--no-ocr", str(d)])
+    assert second.exit_code == 0, second.output
+
+    assert source.stat().st_mtime_ns == mtime_before  # source.* was not re-copied
 
     conn = connect()
     stage_names = [s.name for s in default_stages()]
@@ -120,7 +151,9 @@ def test_sync_reports_duplicates(tmp_path, fixtures):
 
     result = runner.invoke(app, ["sync", "--dry-run", "--no-ocr", "--json", str(d)])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    # Per-file dry-run lines go to stderr in --json mode; `.stdout` is the
+    # clean, isolated JSON stream (see test_sync_resumes_incomplete_pipeline).
+    data = json.loads(result.stdout)
     actions = [f["action"] for f in data["files"]]
     assert actions.count("new") == 1
     assert actions.count("duplicate") == 1
@@ -135,16 +168,18 @@ def test_sync_skips_not_media_file(tmp_path, fixtures):
 
     result = runner.invoke(app, ["sync", "--no-ocr", "--json", str(d)])
     assert result.exit_code == 0, result.output
-    # Rich may wrap the skip line across output lines, so normalise whitespace
-    # before checking for the message.
-    assert "not a recognised media file" in " ".join(result.output.split())
-    data = json.loads(result.output.strip().splitlines()[-1])
+    # --json routes the skip message to stderr so stdout stays pure JSON;
+    # Rich may wrap the line, so normalise whitespace before checking it.
+    assert "not a recognised media file" in " ".join(result.stderr.split())
+    data = json.loads(result.stdout)
     assert data["skipped"] == 1
 
 
 def test_sync_exits_2_on_failed_stages(tmp_path, fixtures, monkeypatch):
     d = _video_dir(tmp_path, fixtures)
-    monkeypatch.setattr(cli, "_ingest_one", lambda conn, path, settings, force: "failed_stages")
+    monkeypatch.setattr(
+        cli, "_ingest_one", lambda conn, path, settings, force, **kwargs: "failed_stages"
+    )
     result = runner.invoke(app, ["sync", "--no-ocr", str(d)])
     assert result.exit_code == 2, result.output
 
@@ -153,7 +188,7 @@ def test_sync_json_shape(tmp_path, fixtures):
     d = _video_dir(tmp_path, fixtures)
     result = runner.invoke(app, ["sync", "--dry-run", "--no-ocr", "--json", str(d)])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert data["dry_run"] is True
     assert data["resumed"] == 0
     assert data["duplicates"] == 0

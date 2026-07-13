@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 
@@ -26,7 +27,8 @@ def parse_timestamp(value: str) -> float:
     """Parse a timestamp string into seconds.
 
     Accepts plain seconds ("83", "83.5"), "mm:ss", or "h:mm:ss". Raises
-    ``ValueError`` on anything else (including negative components).
+    ``ValueError`` on anything else (including negative or non-finite
+    components such as "nan" or "inf").
     """
     parts = value.strip().split(":")
     if not 1 <= len(parts) <= 3 or any(part == "" for part in parts):
@@ -35,7 +37,7 @@ def parse_timestamp(value: str) -> float:
         numbers = [float(part) for part in parts]
     except ValueError:
         raise ValueError(f"invalid timestamp '{value}'") from None
-    if any(number < 0 for number in numbers):
+    if any(number < 0 or not math.isfinite(number) for number in numbers):
         raise ValueError(f"invalid timestamp '{value}'")
     seconds = 0.0
     for number in numbers:

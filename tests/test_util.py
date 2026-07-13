@@ -33,6 +33,6 @@ def test_parse_timestamp_h_mm_ss():
 
 
 def test_parse_timestamp_invalid():
-    for bad in ("", "abc", "1:2:3:4", "1::3", "-5", "1:-2"):
+    for bad in ("", "abc", "1:2:3:4", "1::3", "-5", "1:-2", "nan", "inf", "1e999"):
         with pytest.raises(ValueError):
             parse_timestamp(bad)
