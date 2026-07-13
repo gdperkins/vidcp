@@ -2,7 +2,7 @@
 
 Ranked candidate features and improvements, ordered by value relative to effort
 for a local-first, CPU-only, agent-friendly tool. (Snapshot as of 2026-07-13;
-vidcp v0.1.)
+vidcp v0.2.)
 
 ## Ranked list
 
@@ -70,8 +70,10 @@ vidcp v0.1.)
     MCP server already lets an agent do this on demand — baking it in mostly
     adds precomputation, not new capability.
 
-## v0.2 milestone
+## v0.2 milestone (shipped)
 
-Items **1 + 2 + 3** together make a coherent v0.2: the library becomes
-visually searchable, hits become extractable clips, and filling the library
-becomes frictionless.
+Items **1 + 2 + 3** shipped together as v0.2: the library became visually
+searchable (CLIP keyframe embeddings), hits became extractable clips
+(`vidcp clip` / `get_clip`), and filling the library became frictionless
+(`vidcp sync`). The remaining ranked list (4–13) should be re-evaluated and
+re-ranked for v0.3 now that those three are done.
