@@ -21,7 +21,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from vidcp.db import connect
 from vidcp.errors import VidcpError
-from vidcp.library import artifact_counts, resolve_id
+from vidcp.library import artifact_counts, pipeline_complete, resolve_id
 from vidcp.models import StageState, Video
 from vidcp.store import artifact_dir, sha256_file
 
@@ -234,14 +234,13 @@ def ingest(path: str) -> dict:
     if not is_media_file(file):
         _fail(f"not a recognised media file: {file}")
     video_id = sha256_file(file)
+    from vidcp.pipeline import default_stages
+
+    stage_names = [s.name for s in default_stages()]
     with _library() as conn:
         exists = conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is not None
-        # embed is the DAG's terminal stage — it can only be done/skipped after
-        # every other stage finished, so it doubles as a completeness check.
-        embed = conn.execute(
-            "SELECT status FROM stages WHERE video_id=? AND stage='embed'", (video_id,)
-        ).fetchone()
-    if exists and embed is not None and embed["status"] in ("done", "skipped"):
+        complete = exists and pipeline_complete(conn, video_id, stage_names)
+    if complete:
         return {"video_id": video_id, "short_id": video_id[:8], "status": "already_ingested"}
     # A pre-existing row with an unfinished pipeline needs --force: without it
     # the CLI child would hit its already-ingested check and skip the pipeline.

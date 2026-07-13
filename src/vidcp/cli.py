@@ -29,7 +29,7 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.export.srt import to_srt
 from vidcp.export.vtt import to_vtt
-from vidcp.library import artifact_counts, resolve_id
+from vidcp.library import artifact_counts, pipeline_complete, resolve_id
 from vidcp.models import SceneRow, Segment, StageState, Video
 from vidcp.pipeline import default_stages, transitive_dependents
 from vidcp.pipeline.base import VideoContext
@@ -389,6 +389,100 @@ def ingest(
         raise typer.Exit(code=2)  # partial success
     if errors and not ingested:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def sync(
+    paths: Optional[list[str]] = typer.Argument(None, help="Directories to scan for videos."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only report what would happen."),
+    whisper_model: Optional[str] = typer.Option(
+        None, "--whisper-model", help="Override the whisper model for this run."
+    ),
+    no_ocr: bool = typer.Option(False, "--no-ocr", help="Skip OCR for this run."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Scan directories and ingest any videos not already in the library.
+
+    Files are matched by content hash (renames don't re-ingest); videos with an
+    incomplete pipeline are resumed. Example: vidcp sync ~/Movies
+    """
+    if not paths:
+        raise VidcpError("no directories given", hint="usage: vidcp sync <dir> ...")
+    dirs = [Path(p) for p in paths]
+    for directory in dirs:
+        if not directory.is_dir():
+            raise VidcpError(
+                f"not a directory: {directory}",
+                hint="`vidcp sync` scans directories; use `vidcp ingest` for single files",
+            )
+
+    settings = get_settings()
+    overrides: dict[str, object] = {}
+    if whisper_model:
+        overrides["whisper_model"] = whisper_model
+    if no_ocr:
+        overrides["ocr_enabled"] = False
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+
+    files = _expand_paths([str(d) for d in dirs])
+    stage_names = [s.name for s in default_stages()]
+    plan: list[tuple[Path, str, str]] = []  # (path, video_id, action)
+    counts = {"new": 0, "resume": 0, "up_to_date": 0, "duplicate": 0}
+    had_failures = False
+    seen: set[str] = set()
+
+    conn = connect()
+    try:
+        for path in files:
+            video_id = sha256_file(path)
+            if video_id in seen:
+                action = "duplicate"
+            elif conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
+                action = "new"
+            elif pipeline_complete(conn, video_id, stage_names):
+                action = "up_to_date"
+            else:
+                action = "resume"
+            seen.add(video_id)
+            plan.append((path, video_id, action))
+            counts[action] += 1
+
+        for path, video_id, action in plan:
+            if dry_run:
+                if not json_output:
+                    console.print(f"[cyan]{action:<10}[/cyan] {path}  ({video_id[:8]})")
+                continue
+            if action in ("up_to_date", "duplicate"):
+                continue
+            status = _ingest_one(conn, path, settings, force=(action == "resume"))
+            if status == "failed_stages":
+                had_failures = True
+    finally:
+        conn.close()
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "dry_run": dry_run,
+                    "files": [{"path": str(p), "short_id": v[:8], "action": a} for p, v, a in plan],
+                    "new": counts["new"],
+                    "resumed": counts["resume"],
+                    "up_to_date": counts["up_to_date"],
+                    "duplicates": counts["duplicate"],
+                }
+            )
+        )
+    else:
+        label = "sync (dry run)" if dry_run else "sync"
+        console.print(
+            f"{label}: {counts['new']} new, {counts['resume']} resumed, "
+            f"{counts['up_to_date']} up to date"
+            + (f", {counts['duplicate']} duplicate" if counts["duplicate"] else "")
+        )
+    if had_failures:
+        raise typer.Exit(code=2)
 
 
 @app.command("list")

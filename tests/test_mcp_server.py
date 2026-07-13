@@ -76,6 +76,13 @@ def seed_stage(video_id, stage, status, error=None):
         conn.close()
 
 
+def seed_all_stages_done(video_id):
+    from vidcp.pipeline import default_stages
+
+    for stage in default_stages():
+        seed_stage(video_id, stage.name, "done")
+
+
 def seed_segment(video_id, start_s, end_s, text) -> int:
     conn = connect()
     try:
@@ -376,7 +383,7 @@ async def test_ingest_complete_video_short_circuits(client, spawn_recorder, spee
 
     video_id = sha256_file(speech_fixture)
     seed_video(video_id)
-    seed_stage(video_id, "embed", "done")
+    seed_all_stages_done(video_id)
     payload = result_payload(await client.call_tool("ingest", {"path": str(speech_fixture)}))
     assert payload["status"] == "already_ingested"
     assert spawn_recorder == []
