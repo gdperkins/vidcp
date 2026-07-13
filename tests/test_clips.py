@@ -6,10 +6,14 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from vidcp.cli import app
 from vidcp.clips import extract_clip
+from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.store import artifact_dir
+from vidcp.util import now_iso
 
 VID = "d" * 64
 
@@ -69,3 +73,48 @@ def test_extract_clip_invalid_range(tmp_path, speech_fixture):
 def test_extract_clip_missing_source(tmp_path):
     with pytest.raises(VidcpError):
         extract_clip("e" * 64, 0.0, 1.0, tmp_path / "z.mp4")
+
+
+runner = CliRunner()
+
+
+def _seed_video_row():
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO videos(id, path, title, ingested_at) VALUES (?,?,?,?)",
+            (VID, "/videos/talk.mp4", "talk", now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_clip_command_writes_file(tmp_path, speech_fixture, monkeypatch):
+    _seed_source(speech_fixture)
+    _seed_video_row()
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "moment.mp4"
+    result = runner.invoke(
+        app, ["clip", VID[:8], "--from", "0:00", "--to", "0:01.5", "-o", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.exists() and out.stat().st_size > 0
+    assert "wrote" in result.output
+
+
+def test_clip_command_default_output_name(tmp_path, speech_fixture, monkeypatch):
+    _seed_source(speech_fixture)
+    _seed_video_row()
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["clip", VID[:8], "--from", "0", "--to", "1"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / f"{VID[:8]}_0-1.mp4").exists()
+
+
+def test_clip_command_bad_timestamp(speech_fixture):
+    _seed_source(speech_fixture)
+    _seed_video_row()
+    result = runner.invoke(app, ["clip", VID[:8], "--from", "bogus", "--to", "5"])
+    assert result.exit_code != 0
+    assert "invalid timestamp" in result.output

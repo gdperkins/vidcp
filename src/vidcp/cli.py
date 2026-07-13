@@ -36,7 +36,7 @@ from vidcp.pipeline.base import VideoContext
 from vidcp.pipeline.runner import run_pipeline
 from vidcp.pipeline.stages.probe import is_media_file
 from vidcp.store import add_source, artifact_dir, sha256_file
-from vidcp.util import format_duration, now_iso
+from vidcp.util import format_duration, now_iso, parse_timestamp
 
 app = typer.Typer(
     name="vidcp",
@@ -755,6 +755,41 @@ def export(
         console.print(f"wrote {output}")
     else:
         print(content)
+
+
+@app.command()
+def clip(
+    video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
+    from_ts: str = typer.Option(..., "--from", help="Clip start (seconds, mm:ss, or h:mm:ss)."),
+    to_ts: str = typer.Option(..., "--to", help="Clip end (seconds, mm:ss, or h:mm:ss)."),
+    output: Optional[str] = typer.Option(None, "-o", "--output", help="Output file path."),
+    precise: bool = typer.Option(
+        False, "--precise", help="Re-encode for frame-accurate cuts (slower)."
+    ),
+) -> None:
+    """Extract a clip from a video into a standalone MP4.
+
+    Example: vidcp clip a1b2c3d4 --from 1:23 --to 1:45 -o moment.mp4
+    """
+    from vidcp.clips import extract_clip
+
+    try:
+        start_s = parse_timestamp(from_ts)
+        end_s = parse_timestamp(to_ts)
+    except ValueError as exc:
+        msg = str(exc)
+        typer.echo(f"Error: {msg}", err=True)
+        raise VidcpError(msg, hint="use seconds, mm:ss, or h:mm:ss") from None
+
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+    finally:
+        conn.close()
+
+    out = Path(output) if output else Path(f"{vid[:8]}_{start_s:g}-{end_s:g}.mp4")
+    path = extract_clip(vid, start_s, end_s, out, precise=precise)
+    console.print(f"wrote {path}")
 
 
 @app.command("mcp")

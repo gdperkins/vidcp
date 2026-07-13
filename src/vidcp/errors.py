@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import IO
 
 import click
-from rich.console import Console
 
 
 class VidcpError(click.ClickException):
@@ -31,7 +30,6 @@ class VidcpError(click.ClickException):
         self.hint = hint
 
     def show(self, file: IO[str] | None = None) -> None:
-        console = Console(stderr=True)
-        console.print(f"[bold red]Error:[/bold red] {self.message}")
+        click.echo(f"Error: {self.message}", err=True, file=file)
         if self.hint:
-            console.print(f"[dim]{self.hint}[/dim]")
+            click.echo(f"{self.hint}", err=True, file=file)
