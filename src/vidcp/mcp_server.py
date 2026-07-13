@@ -26,12 +26,13 @@ from vidcp.models import StageState, Video
 from vidcp.store import artifact_dir, sha256_file
 
 _INSTRUCTIONS = (
-    "Query a local vidcp video library: hybrid search over transcripts and "
-    "on-screen text (OCR), transcript retrieval, scene lists, keyframe images, "
-    "and ingestion of new videos. Video ids are SHA-256 hashes; any unique "
-    "prefix works. ingest() returns immediately — poll get_video() until every "
-    "stage is 'done' or 'skipped'. The video only appears in get_video() once "
-    "the background process has registered it, so a 'no video matches' error "
+    "Query a local vidcp video library: hybrid search over transcripts, "
+    "on-screen text (OCR), and visual keyframe content (CLIP), transcript "
+    "retrieval, scene lists, keyframe images, clip extraction, and ingestion "
+    "of new videos. Video ids are SHA-256 hashes; any unique prefix works. "
+    "ingest() returns immediately — poll get_video() until every stage is "
+    "'done' or 'skipped'. The video only appears in get_video() once the "
+    "background process has registered it, so a 'no video matches' error "
     "shortly after ingest() means try again in a bit, not that ingest failed. "
     "Stop polling if any stage reports 'failed'. Do not call ingest() again "
     "for the same file while a stage shows 'running'."
@@ -100,14 +101,16 @@ def get_video(video_id: str) -> dict:
 def search(
     query: str, video_id: str | None = None, kind: str | None = None, limit: int = 10
 ) -> dict:
-    """Hybrid keyword + semantic search over transcripts and on-screen (OCR) text.
+    """Hybrid search over transcripts, on-screen (OCR) text, and visual keyframe content.
 
-    Returns timestamped, scored hits. kind filters to 'transcript' or 'ocr';
-    video_id (any unique prefix) restricts to one video. Follow up with
-    get_transcript() around a hit's ts_s, or get_keyframe() to see the moment.
+    Returns timestamped, scored hits. kind filters to 'transcript', 'ocr', or
+    'visual' (CLIP keyframe matches — their frame_path points at the matched
+    image). video_id (any unique prefix) restricts to one video. Follow up with
+    get_transcript() around a hit's ts_s, get_keyframe() to see the moment, or
+    get_clip() to extract it as a video file.
     """
-    if kind is not None and kind not in ("transcript", "ocr"):
-        _fail(f"unknown kind '{kind}'", "choose one of: transcript, ocr")
+    if kind is not None and kind not in ("transcript", "ocr", "visual"):
+        _fail(f"unknown kind '{kind}'", "choose one of: transcript, ocr, visual")
     from vidcp.search import search as run_search
 
     with _library() as conn:

@@ -451,6 +451,43 @@ async def test_all_eight_tools_registered(client):
     }
 
 
+async def test_search_kind_visual_accepted(client, tmp_path, monkeypatch):
+    import sqlite_vec
+
+    class _StubClip:
+        def encode(self, items, normalize_embeddings=True, **kwargs):
+            return [[0.5] * 512 for _ in items]
+
+    monkeypatch.setattr("vidcp.search.load_model", lambda name: _StubClip())
+    seed_video(VID_A)
+    frame = tmp_path / "f.jpg"
+    frame.write_bytes(b"jpeg")
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO frames(video_id, ts_s, path, kept) VALUES (?,?,?,1)",
+            (VID_A, 4.0, str(frame)),
+        )
+        conn.execute(
+            "INSERT INTO vec_frames(embedding, video_id, frame_id, ts_s) VALUES (?,?,?,?)",
+            (sqlite_vec.serialize_float32([0.5] * 512), VID_A, cur.lastrowid, 4.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = await client.call_tool("search", {"query": "sunset", "kind": "visual"})
+    payload = result_payload(result)
+    assert payload["hits"]
+    assert payload["hits"][0]["kind"] == "visual"
+    assert payload["hits"][0]["frame_path"].endswith("f.jpg")
+
+
+async def test_search_rejects_unknown_kind_v2(client):
+    result = await client.call_tool("search", {"query": "x", "kind": "bogus"})
+    assert "transcript, ocr, visual" in error_text(result)
+
+
 def test_python_dash_m_vidcp_runs():
     result = subprocess.run(
         [sys.executable, "-m", "vidcp", "--help"], capture_output=True, text=True
