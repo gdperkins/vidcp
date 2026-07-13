@@ -45,7 +45,9 @@ def test_extract_clip_stream_copy(tmp_path, speech_fixture):
     result = extract_clip(VID, 0.0, 1.5, out)
     assert result == out
     assert out.exists() and out.stat().st_size > 0
-    assert 0.0 < _duration(out) <= 3.5  # stream copy cuts on keyframes; allow slack
+    assert (
+        0.0 < _duration(out) <= 2.2
+    )  # stream copy cuts on keyframes; allow slack; bound stays below fixture's 2.9s duration to catch dropped -t
 
 
 def test_extract_clip_precise_reencode(tmp_path, speech_fixture):
