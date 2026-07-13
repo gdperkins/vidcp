@@ -396,7 +396,41 @@ async def test_ingest_non_media_file_errors(client, spawn_recorder, tmp_path):
     assert spawn_recorder == []
 
 
-async def test_all_seven_tools_registered(client):
+async def test_get_clip_extracts_and_caches(client, tmp_path):
+    import shutil
+    from pathlib import Path
+
+    from vidcp.store import artifact_dir
+
+    speech = Path(__file__).parent / "fixtures" / "speech.mp4"
+    if not speech.exists():
+        pytest.skip("speech.mp4 fixture is missing")
+    seed_video(VID_A)
+    shutil.copy2(speech, artifact_dir(VID_A) / "source.mp4")
+
+    result = await client.call_tool(
+        "get_clip", {"video_id": VID_A[:8], "start_s": 0.0, "end_s": 1.0}
+    )
+    payload = result_payload(result)
+    clip_path = Path(payload["path"])
+    assert clip_path.exists() and payload["size_bytes"] > 0
+    assert payload["video_id"] == VID_A
+
+    again = result_payload(
+        await client.call_tool("get_clip", {"video_id": VID_A[:8], "start_s": 0.0, "end_s": 1.0})
+    )
+    assert again["path"] == payload["path"]  # cached, same file
+
+
+async def test_get_clip_invalid_range(client):
+    seed_video(VID_A)
+    result = await client.call_tool(
+        "get_clip", {"video_id": VID_A[:8], "start_s": 5.0, "end_s": 2.0}
+    )
+    assert "invalid clip range" in error_text(result)
+
+
+async def test_all_eight_tools_registered(client):
     tools = {tool.name for tool in (await client.list_tools()).tools}
     assert tools == {
         "search",
@@ -405,6 +439,7 @@ async def test_all_seven_tools_registered(client):
         "get_transcript",
         "list_scenes",
         "get_keyframe",
+        "get_clip",
         "ingest",
     }
 

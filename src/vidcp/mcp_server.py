@@ -23,7 +23,7 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.library import artifact_counts, resolve_id
 from vidcp.models import StageState, Video
-from vidcp.store import sha256_file
+from vidcp.store import artifact_dir, sha256_file
 
 _INSTRUCTIONS = (
     "Query a local vidcp video library: hybrid search over transcripts and "
@@ -249,7 +249,43 @@ def ingest(path: str) -> dict:
     return {"video_id": video_id, "short_id": video_id[:8], "status": "started"}
 
 
-_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes, get_keyframe, ingest)
+def get_clip(video_id: str, start_s: float, end_s: float) -> dict:
+    """Extract [start_s, end_s] from a video into an MP4 file and return its path.
+
+    The clip is stream-copied (fast; cut points land on the nearest keyframes)
+    and cached under the video's artifact directory — repeated calls with the
+    same range return the same file. Use search()/get_transcript() to find the
+    range first. The returned path is on the local filesystem.
+    """
+    from vidcp.clips import extract_clip
+
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+    out = artifact_dir(vid) / "clips" / f"clip_{start_s:.2f}_{end_s:.2f}.mp4"
+    if not out.exists():
+        try:
+            extract_clip(vid, start_s, end_s, out)
+        except VidcpError as exc:
+            _fail(exc.message, exc.hint)
+    return {
+        "video_id": vid,
+        "path": str(out),
+        "start_s": start_s,
+        "end_s": end_s,
+        "size_bytes": out.stat().st_size,
+    }
+
+
+_TOOLS = (
+    search,
+    list_videos,
+    get_video,
+    get_transcript,
+    list_scenes,
+    get_keyframe,
+    get_clip,
+    ingest,
+)
 
 
 def create_server() -> FastMCP:
