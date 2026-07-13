@@ -243,6 +243,14 @@ def _check_models(settings: Settings) -> list[tuple[str, str]]:
     embed_dir = hub / f"models--{embed_slug}"
     downloaded = "downloaded"
     pending = "will download on first use"
+    clip_slug = settings.clip_model.replace("/", "--")
+    clip_dir = hub / f"models--{clip_slug}"
+    if not settings.clip_enabled:
+        clip_detail = "disabled (clip_enabled=false)"
+    elif clip_dir.exists():
+        clip_detail = downloaded
+    else:
+        clip_detail = pending
     return [
         (
             f"whisper model ({settings.whisper_model})",
@@ -252,6 +260,7 @@ def _check_models(settings: Settings) -> list[tuple[str, str]]:
             f"embedding model ({settings.embed_model})",
             downloaded if embed_dir.exists() else pending,
         ),
+        (f"clip model ({settings.clip_model})", clip_detail),
     ]
 
 
@@ -612,6 +621,7 @@ def delete(
         # stats and, via rowid reuse, mis-attribute future search hits).
         conn.execute("DELETE FROM fts WHERE video_id=?", (vid,))
         conn.execute("DELETE FROM vec WHERE video_id=?", (vid,))
+        conn.execute("DELETE FROM vec_frames WHERE video_id=?", (vid,))
         # FK cascade removes stages/scenes/segments/ocr_blocks/frames.
         conn.execute("DELETE FROM videos WHERE id=?", (vid,))
         conn.commit()
@@ -707,7 +717,9 @@ def transcript(
 def search(
     query: str = typer.Argument(..., help="Search query."),
     video_id: Optional[str] = typer.Option(None, "--id", help="Restrict to one video."),
-    kind: Optional[str] = typer.Option(None, "--kind", help="Filter by kind: transcript|ocr."),
+    kind: Optional[str] = typer.Option(
+        None, "--kind", help="Filter by kind: transcript|ocr|visual."
+    ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
@@ -717,8 +729,8 @@ def search(
     """
     from vidcp.search import search as run_search
 
-    if kind is not None and kind not in ("transcript", "ocr"):
-        raise VidcpError(f"unknown kind '{kind}'", hint="choose one of: transcript, ocr")
+    if kind is not None and kind not in ("transcript", "ocr", "visual"):
+        raise VidcpError(f"unknown kind '{kind}'", hint="choose one of: transcript, ocr, visual")
 
     conn = connect()
     try:
@@ -805,6 +817,7 @@ def stats(
         segments = conn.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
         ocr_blocks = conn.execute("SELECT COUNT(*) FROM ocr_blocks").fetchone()[0]
         vec_rows = conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0]
+        vec_frame_rows = conn.execute("SELECT COUNT(*) FROM vec_frames").fetchone()[0]
     finally:
         conn.close()
 
@@ -821,6 +834,7 @@ def stats(
                     "segments": segments,
                     "ocr_blocks": ocr_blocks,
                     "vec_rows": vec_rows,
+                    "vec_frames": vec_frame_rows,
                     "store_bytes": store_bytes,
                     "db_bytes": db_bytes,
                 }
@@ -837,6 +851,7 @@ def stats(
     table.add_row("segments", str(segments))
     table.add_row("ocr blocks", str(ocr_blocks))
     table.add_row("vec rows", str(vec_rows))
+    table.add_row("frame vec rows", str(vec_frame_rows))
     table.add_row("store size", _human_size(store_bytes))
     table.add_row("db size", _human_size(db_bytes))
     console.print(table)
