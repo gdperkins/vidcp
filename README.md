@@ -55,13 +55,27 @@ agents can query the library directly:
 claude mcp add vidcp -- vidcp mcp
 ```
 
-Tools: `search`, `list_videos`, `get_video`, `get_transcript`, `list_scenes`,
-`get_keyframe` (returns the nearest stored keyframe as an image), and `ingest`.
-`ingest` returns immediately and processing continues in a background process —
-poll `get_video` until every stage reports `done` or `skipped`. The video
-registers in the library shortly after `ingest` returns, so poll `get_video`
-rather than treating an initial "no video matches" error as failure; a stage
-reporting `failed` is also terminal.
+Each tool wraps the same functions the CLI uses, against the same
+`~/.vidcp` library:
+
+| Tool | What it does |
+| --- | --- |
+| `search` | Hybrid keyword + semantic search over transcript and OCR text; optional `video_id` and `kind` (`transcript`\|`ocr`) filters |
+| `list_videos` | Every video in the library, newest first |
+| `get_video` | One video's metadata, artifact counts, and per-stage pipeline status |
+| `get_transcript` | Transcript segments, optionally windowed to `[start_s, end_s]` |
+| `list_scenes` | Detected scene boundaries with timestamps |
+| `get_keyframe` | The stored keyframe nearest a timestamp, returned as a JPEG (longest side ≤ 1280 px) so the agent can look at the moment |
+| `ingest` | Add a new video file; returns immediately while processing runs in a detached background process |
+
+A typical agent flow: `search` for a phrase, `get_transcript` windowed around a
+hit's `ts_s` for context, then `get_keyframe` at that timestamp to see the
+frame.
+
+`ingest` is asynchronous — poll `get_video` until every stage reports `done` or
+`skipped`. The video registers in the library shortly after `ingest` returns,
+so poll `get_video` rather than treating an initial "no video matches" error as
+failure; a stage reporting `failed` is also terminal.
 
 ## Configuration
 
