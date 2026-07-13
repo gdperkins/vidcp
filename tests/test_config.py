@@ -31,6 +31,8 @@ def test_defaults(monkeypatch):
     assert s.ocr_enabled is True
     assert s.embed_model == "sentence-transformers/all-MiniLM-L6-v2"
     assert s.link_mode == "copy"
+    assert s.clip_model == "sentence-transformers/clip-ViT-B-32"
+    assert s.clip_enabled is True
     # home default is expanded (no literal tilde left behind)
     assert "~" not in str(s.home)
 
