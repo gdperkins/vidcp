@@ -1,4 +1,6 @@
-from vidcp.util import format_duration
+import pytest
+
+from vidcp.util import format_duration, parse_timestamp
 
 
 def test_format_duration_mm_ss():
@@ -14,3 +16,23 @@ def test_format_duration_hours():
 
 def test_format_duration_none():
     assert format_duration(None) == "-"
+
+
+def test_parse_timestamp_plain_seconds():
+    assert parse_timestamp("83") == 83.0
+    assert parse_timestamp("83.5") == 83.5
+
+
+def test_parse_timestamp_mm_ss():
+    assert parse_timestamp("1:23") == 83.0
+    assert parse_timestamp("01:23.5") == 83.5
+
+
+def test_parse_timestamp_h_mm_ss():
+    assert parse_timestamp("1:02:03") == 3723.0
+
+
+def test_parse_timestamp_invalid():
+    for bad in ("", "abc", "1:2:3:4", "1::3", "-5", "1:-2"):
+        with pytest.raises(ValueError):
+            parse_timestamp(bad)

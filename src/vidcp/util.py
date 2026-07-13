@@ -20,3 +20,24 @@ def format_duration(seconds: float | None) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def parse_timestamp(value: str) -> float:
+    """Parse a timestamp string into seconds.
+
+    Accepts plain seconds ("83", "83.5"), "mm:ss", or "h:mm:ss". Raises
+    ``ValueError`` on anything else (including negative components).
+    """
+    parts = value.strip().split(":")
+    if not 1 <= len(parts) <= 3 or any(part == "" for part in parts):
+        raise ValueError(f"invalid timestamp '{value}'")
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        raise ValueError(f"invalid timestamp '{value}'") from None
+    if any(number < 0 for number in numbers):
+        raise ValueError(f"invalid timestamp '{value}'")
+    seconds = 0.0
+    for number in numbers:
+        seconds = seconds * 60 + number
+    return seconds
