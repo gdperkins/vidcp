@@ -76,6 +76,13 @@ def seed_stage(video_id, stage, status, error=None):
         conn.close()
 
 
+def seed_all_stages_done(video_id):
+    from vidcp.pipeline import default_stages
+
+    for stage in default_stages():
+        seed_stage(video_id, stage.name, "done")
+
+
 def seed_segment(video_id, start_s, end_s, text) -> int:
     conn = connect()
     try:
@@ -376,7 +383,7 @@ async def test_ingest_complete_video_short_circuits(client, spawn_recorder, spee
 
     video_id = sha256_file(speech_fixture)
     seed_video(video_id)
-    seed_stage(video_id, "embed", "done")
+    seed_all_stages_done(video_id)
     payload = result_payload(await client.call_tool("ingest", {"path": str(speech_fixture)}))
     assert payload["status"] == "already_ingested"
     assert spawn_recorder == []
@@ -396,7 +403,41 @@ async def test_ingest_non_media_file_errors(client, spawn_recorder, tmp_path):
     assert spawn_recorder == []
 
 
-async def test_all_seven_tools_registered(client):
+async def test_get_clip_extracts_and_caches(client, tmp_path):
+    import shutil
+    from pathlib import Path
+
+    from vidcp.store import artifact_dir
+
+    speech = Path(__file__).parent / "fixtures" / "speech.mp4"
+    if not speech.exists():
+        pytest.skip("speech.mp4 fixture is missing")
+    seed_video(VID_A)
+    shutil.copy2(speech, artifact_dir(VID_A) / "source.mp4")
+
+    result = await client.call_tool(
+        "get_clip", {"video_id": VID_A[:8], "start_s": 0.0, "end_s": 1.0}
+    )
+    payload = result_payload(result)
+    clip_path = Path(payload["path"])
+    assert clip_path.exists() and payload["size_bytes"] > 0
+    assert payload["video_id"] == VID_A
+
+    again = result_payload(
+        await client.call_tool("get_clip", {"video_id": VID_A[:8], "start_s": 0.0, "end_s": 1.0})
+    )
+    assert again["path"] == payload["path"]  # cached, same file
+
+
+async def test_get_clip_invalid_range(client):
+    seed_video(VID_A)
+    result = await client.call_tool(
+        "get_clip", {"video_id": VID_A[:8], "start_s": 5.0, "end_s": 2.0}
+    )
+    assert "invalid clip range" in error_text(result)
+
+
+async def test_all_eight_tools_registered(client):
     tools = {tool.name for tool in (await client.list_tools()).tools}
     assert tools == {
         "search",
@@ -405,8 +446,46 @@ async def test_all_seven_tools_registered(client):
         "get_transcript",
         "list_scenes",
         "get_keyframe",
+        "get_clip",
         "ingest",
     }
+
+
+async def test_search_kind_visual_accepted(client, tmp_path, monkeypatch):
+    import sqlite_vec
+
+    class _StubClip:
+        def encode(self, items, normalize_embeddings=True, **kwargs):
+            return [[0.5] * 512 for _ in items]
+
+    monkeypatch.setattr("vidcp.search.load_model", lambda name: _StubClip())
+    seed_video(VID_A)
+    frame = tmp_path / "f.jpg"
+    frame.write_bytes(b"jpeg")
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO frames(video_id, ts_s, path, kept) VALUES (?,?,?,1)",
+            (VID_A, 4.0, str(frame)),
+        )
+        conn.execute(
+            "INSERT INTO vec_frames(embedding, video_id, frame_id, ts_s) VALUES (?,?,?,?)",
+            (sqlite_vec.serialize_float32([0.5] * 512), VID_A, cur.lastrowid, 4.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = await client.call_tool("search", {"query": "sunset", "kind": "visual"})
+    payload = result_payload(result)
+    assert payload["hits"]
+    assert payload["hits"][0]["kind"] == "visual"
+    assert payload["hits"][0]["frame_path"].endswith("f.jpg")
+
+
+async def test_search_rejects_unknown_kind_hint(client):
+    result = await client.call_tool("search", {"query": "x", "kind": "bogus"})
+    assert "transcript, ocr, visual" in error_text(result)
 
 
 def test_python_dash_m_vidcp_runs():

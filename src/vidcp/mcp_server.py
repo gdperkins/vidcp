@@ -21,17 +21,18 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from vidcp.db import connect
 from vidcp.errors import VidcpError
-from vidcp.library import artifact_counts, resolve_id
+from vidcp.library import artifact_counts, pipeline_complete, resolve_id
 from vidcp.models import StageState, Video
-from vidcp.store import sha256_file
+from vidcp.store import artifact_dir, sha256_file
 
 _INSTRUCTIONS = (
-    "Query a local vidcp video library: hybrid search over transcripts and "
-    "on-screen text (OCR), transcript retrieval, scene lists, keyframe images, "
-    "and ingestion of new videos. Video ids are SHA-256 hashes; any unique "
-    "prefix works. ingest() returns immediately — poll get_video() until every "
-    "stage is 'done' or 'skipped'. The video only appears in get_video() once "
-    "the background process has registered it, so a 'no video matches' error "
+    "Query a local vidcp video library: hybrid search over transcripts, "
+    "on-screen text (OCR), and visual keyframe content (CLIP), transcript "
+    "retrieval, scene lists, keyframe images, clip extraction, and ingestion "
+    "of new videos. Video ids are SHA-256 hashes; any unique prefix works. "
+    "ingest() returns immediately — poll get_video() until every stage is "
+    "'done' or 'skipped'. The video only appears in get_video() once the "
+    "background process has registered it, so a 'no video matches' error "
     "shortly after ingest() means try again in a bit, not that ingest failed. "
     "Stop polling if any stage reports 'failed'. Do not call ingest() again "
     "for the same file while a stage shows 'running'."
@@ -100,14 +101,16 @@ def get_video(video_id: str) -> dict:
 def search(
     query: str, video_id: str | None = None, kind: str | None = None, limit: int = 10
 ) -> dict:
-    """Hybrid keyword + semantic search over transcripts and on-screen (OCR) text.
+    """Hybrid search over transcripts, on-screen (OCR) text, and visual keyframe content.
 
-    Returns timestamped, scored hits. kind filters to 'transcript' or 'ocr';
-    video_id (any unique prefix) restricts to one video. Follow up with
-    get_transcript() around a hit's ts_s, or get_keyframe() to see the moment.
+    Returns timestamped, scored hits. kind filters to 'transcript', 'ocr', or
+    'visual' (CLIP keyframe matches — their frame_path points at the matched
+    image). video_id (any unique prefix) restricts to one video. Follow up with
+    get_transcript() around a hit's ts_s, get_keyframe() to see the moment, or
+    get_clip() to extract it as a video file.
     """
-    if kind is not None and kind not in ("transcript", "ocr"):
-        _fail(f"unknown kind '{kind}'", "choose one of: transcript, ocr")
+    if kind is not None and kind not in ("transcript", "ocr", "visual"):
+        _fail(f"unknown kind '{kind}'", "choose one of: transcript, ocr, visual")
     from vidcp.search import search as run_search
 
     with _library() as conn:
@@ -234,14 +237,13 @@ def ingest(path: str) -> dict:
     if not is_media_file(file):
         _fail(f"not a recognised media file: {file}")
     video_id = sha256_file(file)
+    from vidcp.pipeline import default_stages
+
+    stage_names = [s.name for s in default_stages()]
     with _library() as conn:
         exists = conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is not None
-        # embed is the DAG's terminal stage — it can only be done/skipped after
-        # every other stage finished, so it doubles as a completeness check.
-        embed = conn.execute(
-            "SELECT status FROM stages WHERE video_id=? AND stage='embed'", (video_id,)
-        ).fetchone()
-    if exists and embed is not None and embed["status"] in ("done", "skipped"):
+        complete = exists and pipeline_complete(conn, video_id, stage_names)
+    if complete:
         return {"video_id": video_id, "short_id": video_id[:8], "status": "already_ingested"}
     # A pre-existing row with an unfinished pipeline needs --force: without it
     # the CLI child would hit its already-ingested check and skip the pipeline.
@@ -249,7 +251,43 @@ def ingest(path: str) -> dict:
     return {"video_id": video_id, "short_id": video_id[:8], "status": "started"}
 
 
-_TOOLS = (search, list_videos, get_video, get_transcript, list_scenes, get_keyframe, ingest)
+def get_clip(video_id: str, start_s: float, end_s: float) -> dict:
+    """Extract [start_s, end_s] from a video into an MP4 file and return its path.
+
+    The clip is stream-copied (fast; cut points land on the nearest keyframes)
+    and cached under the video's artifact directory — repeated calls with the
+    same range return the same file. Use search()/get_transcript() to find the
+    range first. The returned path is on the local filesystem.
+    """
+    from vidcp.clips import extract_clip
+
+    with _library() as conn:
+        vid = _resolve(conn, video_id)
+    out = artifact_dir(vid) / "clips" / f"clip_{start_s:.2f}_{end_s:.2f}.mp4"
+    if not out.exists():
+        try:
+            extract_clip(vid, start_s, end_s, out)
+        except VidcpError as exc:
+            _fail(exc.message, exc.hint)
+    return {
+        "video_id": vid,
+        "path": str(out),
+        "start_s": start_s,
+        "end_s": end_s,
+        "size_bytes": out.stat().st_size,
+    }
+
+
+_TOOLS = (
+    search,
+    list_videos,
+    get_video,
+    get_transcript,
+    list_scenes,
+    get_keyframe,
+    get_clip,
+    ingest,
+)
 
 
 def create_server() -> FastMCP:

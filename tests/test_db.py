@@ -10,6 +10,7 @@ EXPECTED_TABLES = {
     "frames",
     "fts",
     "vec",
+    "vec_frames",
     "schema_version",
 }
 
@@ -91,5 +92,27 @@ def test_sqlite_vec_is_loaded():
     try:
         version = conn.execute("SELECT vec_version()").fetchone()[0]
         assert isinstance(version, str)
+    finally:
+        conn.close()
+
+
+def test_migration_004_vec_frames():
+    import sqlite_vec
+
+    from vidcp.db import connect
+
+    conn = connect()
+    try:
+        version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        assert version >= 4
+        vec = sqlite_vec.serialize_float32([0.1] * 512)
+        conn.execute(
+            "INSERT INTO vec_frames(embedding, video_id, frame_id, ts_s) VALUES (?,?,?,?)",
+            (vec, "a" * 64, 1, 2.5),
+        )
+        row = conn.execute(
+            "SELECT frame_id, ts_s FROM vec_frames WHERE embedding MATCH ? AND k = 1", (vec,)
+        ).fetchone()
+        assert row["frame_id"] == 1
     finally:
         conn.close()

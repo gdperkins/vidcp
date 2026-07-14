@@ -25,6 +25,8 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("VIDCP_HOME", str(home))
     # Tests use the tiny whisper model (fast); matches the CI configuration.
     monkeypatch.setenv("VIDCP_WHISPER_MODEL", "tiny")
+    # CLIP weights are ~600 MB; keep visual embedding off unless a test opts in.
+    monkeypatch.setenv("VIDCP_CLIP_ENABLED", "false")
     get_settings.cache_clear()
     yield home
     get_settings.cache_clear()

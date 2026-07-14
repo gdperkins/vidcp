@@ -29,14 +29,14 @@ from vidcp.db import connect
 from vidcp.errors import VidcpError
 from vidcp.export.srt import to_srt
 from vidcp.export.vtt import to_vtt
-from vidcp.library import artifact_counts, resolve_id
+from vidcp.library import artifact_counts, pipeline_complete, resolve_id
 from vidcp.models import SceneRow, Segment, StageState, Video
 from vidcp.pipeline import default_stages, transitive_dependents
 from vidcp.pipeline.base import VideoContext
 from vidcp.pipeline.runner import run_pipeline
 from vidcp.pipeline.stages.probe import is_media_file
 from vidcp.store import add_source, artifact_dir, sha256_file
-from vidcp.util import format_duration, now_iso
+from vidcp.util import format_duration, now_iso, parse_timestamp
 
 app = typer.Typer(
     name="vidcp",
@@ -243,6 +243,14 @@ def _check_models(settings: Settings) -> list[tuple[str, str]]:
     embed_dir = hub / f"models--{embed_slug}"
     downloaded = "downloaded"
     pending = "will download on first use"
+    clip_slug = settings.clip_model.replace("/", "--")
+    clip_dir = hub / f"models--{clip_slug}"
+    if not settings.clip_enabled:
+        clip_detail = "disabled (clip_enabled=false)"
+    elif clip_dir.exists():
+        clip_detail = downloaded
+    else:
+        clip_detail = pending
     return [
         (
             f"whisper model ({settings.whisper_model})",
@@ -252,6 +260,7 @@ def _check_models(settings: Settings) -> list[tuple[str, str]]:
             f"embedding model ({settings.embed_model})",
             downloaded if embed_dir.exists() else pending,
         ),
+        (f"clip model ({settings.clip_model})", clip_detail),
     ]
 
 
@@ -309,6 +318,45 @@ def doctor() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _ingest_one(
+    conn, path: Path, settings: Settings, force: bool, console: Console = console
+) -> str:
+    """Ingest a single file. Returns:
+    'ingested' | 'failed_stages' | 'already' | 'missing' | 'not_media'.
+
+    ``console`` defaults to the module-level console; callers that need clean
+    stdout (e.g. ``sync --json``) pass a stderr console instead so these Rich
+    status lines don't land ahead of a JSON document on stdout.
+    """
+    if not path.exists():
+        return "missing"
+    if not is_media_file(path):
+        return "not_media"
+    video_id = sha256_file(path)
+    existing = conn.execute("SELECT id FROM videos WHERE id=?", (video_id,)).fetchone()
+    if existing and not force:
+        console.print(f"already ingested {video_id[:8]}  ({path.name})")
+        return "already"
+    # The store is content-addressed: if a source.* already exists for this id
+    # (e.g. a resume after a partial pipeline run), re-copying the bytes would
+    # be redundant work — same content, possibly a different extension, but
+    # never a second source.* file.
+    if not any(artifact_dir(video_id).glob("source.*")):
+        add_source(path, video_id)
+    if existing is None:
+        conn.execute(
+            "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
+            (video_id, str(path.resolve()), now_iso()),
+        )
+        conn.commit()
+    outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
+    if _report_failures(outcomes, video_id):
+        console.print(f"[yellow]ingested with errors[/yellow] {video_id[:8]}  {path.name}")
+        return "failed_stages"
+    console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
+    return "ingested"
+
+
 @app.command()
 def ingest(
     paths: Optional[list[str]] = typer.Argument(None, help="Video files or directories."),
@@ -343,33 +391,18 @@ def ingest(
     had_failures = False
     try:
         for path in files:
-            if not path.exists():
+            status = _ingest_one(conn, path, settings, force)
+            if status == "missing":
                 console.print(f"[red]skip[/red] {path}: file not found")
                 errors += 1
-                continue
-            if not is_media_file(path):
+            elif status == "not_media":
                 console.print(f"[red]skip[/red] {path}: not a recognised media file")
                 errors += 1
-                continue
-            video_id = sha256_file(path)
-            existing = conn.execute("SELECT id FROM videos WHERE id=?", (video_id,)).fetchone()
-            if existing and not force:
-                console.print(f"already ingested {video_id[:8]}  ({path.name})")
-                continue
-            add_source(path, video_id)
-            if existing is None:
-                conn.execute(
-                    "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
-                    (video_id, str(path.resolve()), now_iso()),
-                )
-                conn.commit()
-            outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
-            if _report_failures(outcomes, video_id):
-                console.print(f"[yellow]ingested with errors[/yellow] {video_id[:8]}  {path.name}")
+            elif status == "failed_stages":
                 had_failures = True
-            else:
-                console.print(f"[green]ingested[/green] {video_id[:8]}  {path.name}")
-            ingested += 1
+                ingested += 1
+            elif status == "ingested":
+                ingested += 1
     finally:
         conn.close()
 
@@ -377,6 +410,130 @@ def ingest(
         raise typer.Exit(code=2)  # partial success
     if errors and not ingested:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def sync(
+    paths: Optional[list[str]] = typer.Argument(None, help="Directories to scan for videos."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only report what would happen."),
+    whisper_model: Optional[str] = typer.Option(
+        None, "--whisper-model", help="Override the whisper model for this run."
+    ),
+    no_ocr: bool = typer.Option(False, "--no-ocr", help="Skip OCR for this run."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Scan directories and ingest any videos not already in the library.
+
+    Files are matched by content hash (renames don't re-ingest); videos with an
+    incomplete pipeline are resumed. Example: vidcp sync ~/Movies
+    """
+    if not paths:
+        raise VidcpError("no directories given", hint="usage: vidcp sync <dir> ...")
+    dirs = [Path(p) for p in paths]
+    for directory in dirs:
+        if not directory.is_dir():
+            raise VidcpError(
+                f"not a directory: {directory}",
+                hint="`vidcp sync` scans directories; use `vidcp ingest` for single files",
+            )
+
+    settings = get_settings()
+    overrides: dict[str, object] = {}
+    if whisper_model:
+        overrides["whisper_model"] = whisper_model
+    if no_ocr:
+        overrides["ocr_enabled"] = False
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+
+    files = _expand_paths([str(d) for d in dirs])
+    stage_names = [s.name for s in default_stages()]
+    plan: list[tuple[Path, str, str]] = []  # (path, video_id, action)
+    counts = {"new": 0, "resume": 0, "up_to_date": 0, "duplicate": 0, "missing": 0}
+    had_failures = False
+    skipped = 0
+    seen: set[str] = set()
+
+    # In --json mode, stdout must carry only the final JSON document (so
+    # `vidcp sync --json | jq` works); route every incidental status line —
+    # skip lines, per-file dry-run lines, and _ingest_one's own lines — to
+    # stderr instead. Outside --json mode this is just the regular console.
+    err_console = Console(stderr=True) if json_output else console
+
+    conn = connect()
+    try:
+        for path in files:
+            try:
+                video_id = sha256_file(path)
+            except OSError:
+                plan.append((path, "", "missing"))
+                counts["missing"] += 1
+                continue
+            if video_id in seen:
+                action = "duplicate"
+            elif conn.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
+                action = "new"
+            elif pipeline_complete(conn, video_id, stage_names):
+                action = "up_to_date"
+            else:
+                action = "resume"
+            seen.add(video_id)
+            plan.append((path, video_id, action))
+            counts[action] += 1
+
+        for path, video_id, action in plan:
+            if dry_run:
+                err_console.print(f"[cyan]{action:<10}[/cyan] {path}  ({video_id[:8]})")
+                continue
+            if action == "missing":
+                err_console.print(f"[red]skip[/red] {path}: file not found")
+                continue
+            if action in ("up_to_date", "duplicate"):
+                continue
+            status = _ingest_one(
+                conn, path, settings, force=(action == "resume"), console=err_console
+            )
+            if status == "failed_stages":
+                had_failures = True
+            elif status == "missing":
+                err_console.print(f"[red]skip[/red] {path}: file not found")
+                skipped += 1
+            elif status == "not_media":
+                err_console.print(f"[red]skip[/red] {path}: not a recognised media file")
+                skipped += 1
+    finally:
+        conn.close()
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "dry_run": dry_run,
+                    "files": [{"path": str(p), "short_id": v[:8], "action": a} for p, v, a in plan],
+                    "new": counts["new"],
+                    "resumed": counts["resume"],
+                    "up_to_date": counts["up_to_date"],
+                    "duplicates": counts["duplicate"],
+                    "missing": counts["missing"],
+                    "skipped": skipped,
+                }
+            )
+        )
+    else:
+        label = "sync (dry run)" if dry_run else "sync"
+        summary = (
+            f"{label}: {counts['new']} new, {counts['resume']} resumed, "
+            f"{counts['up_to_date']} up to date"
+        )
+        if counts["duplicate"]:
+            summary += f", {counts['duplicate']} duplicate"
+        if counts["missing"]:
+            summary += f", {counts['missing']} missing"
+        if skipped:
+            summary += f", {skipped} skipped"
+        console.print(summary)
+    if had_failures:
+        raise typer.Exit(code=2)
 
 
 @app.command("list")
@@ -478,11 +635,13 @@ def delete(
     conn = connect()
     try:
         vid = resolve_id(conn, video_id)
-        # fts and vec are virtual tables and can't carry FK constraints, so their
-        # rows must be deleted explicitly (leaving them orphaned would inflate
-        # stats and, via rowid reuse, mis-attribute future search hits).
+        # fts, vec, and vec_frames are virtual tables and can't carry FK
+        # constraints, so their rows must be deleted explicitly (leaving them
+        # orphaned would inflate stats and, via rowid reuse, mis-attribute
+        # future search hits).
         conn.execute("DELETE FROM fts WHERE video_id=?", (vid,))
         conn.execute("DELETE FROM vec WHERE video_id=?", (vid,))
+        conn.execute("DELETE FROM vec_frames WHERE video_id=?", (vid,))
         # FK cascade removes stages/scenes/segments/ocr_blocks/frames.
         conn.execute("DELETE FROM videos WHERE id=?", (vid,))
         conn.commit()
@@ -578,7 +737,9 @@ def transcript(
 def search(
     query: str = typer.Argument(..., help="Search query."),
     video_id: Optional[str] = typer.Option(None, "--id", help="Restrict to one video."),
-    kind: Optional[str] = typer.Option(None, "--kind", help="Filter by kind: transcript|ocr."),
+    kind: Optional[str] = typer.Option(
+        None, "--kind", help="Filter by kind: transcript|ocr|visual."
+    ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
@@ -588,8 +749,8 @@ def search(
     """
     from vidcp.search import search as run_search
 
-    if kind is not None and kind not in ("transcript", "ocr"):
-        raise VidcpError(f"unknown kind '{kind}'", hint="choose one of: transcript, ocr")
+    if kind is not None and kind not in ("transcript", "ocr", "visual"):
+        raise VidcpError(f"unknown kind '{kind}'", hint="choose one of: transcript, ocr, visual")
 
     conn = connect()
     try:
@@ -676,6 +837,7 @@ def stats(
         segments = conn.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
         ocr_blocks = conn.execute("SELECT COUNT(*) FROM ocr_blocks").fetchone()[0]
         vec_rows = conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0]
+        vec_frame_rows = conn.execute("SELECT COUNT(*) FROM vec_frames").fetchone()[0]
     finally:
         conn.close()
 
@@ -692,6 +854,7 @@ def stats(
                     "segments": segments,
                     "ocr_blocks": ocr_blocks,
                     "vec_rows": vec_rows,
+                    "vec_frames": vec_frame_rows,
                     "store_bytes": store_bytes,
                     "db_bytes": db_bytes,
                 }
@@ -708,6 +871,7 @@ def stats(
     table.add_row("segments", str(segments))
     table.add_row("ocr blocks", str(ocr_blocks))
     table.add_row("vec rows", str(vec_rows))
+    table.add_row("frame vec rows", str(vec_frame_rows))
     table.add_row("store size", _human_size(store_bytes))
     table.add_row("db size", _human_size(db_bytes))
     console.print(table)
@@ -755,6 +919,39 @@ def export(
         console.print(f"wrote {output}")
     else:
         print(content)
+
+
+@app.command()
+def clip(
+    video_id: str = typer.Argument(..., help="Video id (any unique prefix)."),
+    from_ts: str = typer.Option(..., "--from", help="Clip start (seconds, mm:ss, or h:mm:ss)."),
+    to_ts: str = typer.Option(..., "--to", help="Clip end (seconds, mm:ss, or h:mm:ss)."),
+    output: Optional[str] = typer.Option(None, "-o", "--output", help="Output file path."),
+    precise: bool = typer.Option(
+        False, "--precise", help="Re-encode for frame-accurate cuts (slower)."
+    ),
+) -> None:
+    """Extract a clip from a video into a standalone MP4.
+
+    Example: vidcp clip a1b2c3d4 --from 1:23 --to 1:45 -o moment.mp4
+    """
+    from vidcp.clips import extract_clip
+
+    try:
+        start_s = parse_timestamp(from_ts)
+        end_s = parse_timestamp(to_ts)
+    except ValueError as exc:
+        raise VidcpError(str(exc), hint="use seconds, mm:ss, or h:mm:ss") from None
+
+    conn = connect()
+    try:
+        vid = resolve_id(conn, video_id)
+    finally:
+        conn.close()
+
+    out = Path(output) if output else Path(f"{vid[:8]}_{start_s:g}-{end_s:g}.mp4")
+    path = extract_clip(vid, start_s, end_s, out, precise=precise)
+    console.print(f"wrote {path}")
 
 
 @app.command("mcp")

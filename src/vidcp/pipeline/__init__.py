@@ -21,11 +21,14 @@ def transitive_dependents(stages, target_name: str) -> set[str]:
 def default_stages():
     """Return the ordered default ingest pipeline.
 
-    Heavy imports (scenedetect, imagehash) happen here rather than at module
-    import time so lightweight commands like ``vidcp list`` start fast.
+    Importing the stage modules themselves is cheap; each stage's heavy
+    libraries (scenedetect, imagehash, faster-whisper, sentence-transformers,
+    etc.) are lazy-imported inside its ``run()`` method instead, so
+    lightweight commands like ``vidcp list`` still start fast.
     """
     from vidcp.pipeline.stages.audio import AudioStage
     from vidcp.pipeline.stages.embed import EmbedStage
+    from vidcp.pipeline.stages.embed_frames import EmbedFramesStage
     from vidcp.pipeline.stages.keyframes import KeyframesStage
     from vidcp.pipeline.stages.ocr import OcrStage
     from vidcp.pipeline.stages.probe import ProbeStage
@@ -40,4 +43,5 @@ def default_stages():
         KeyframesStage(),
         OcrStage(),
         EmbedStage(),
+        EmbedFramesStage(),
     ]

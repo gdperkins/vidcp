@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 
 from vidcp.errors import VidcpError
 
@@ -39,3 +40,10 @@ def artifact_counts(conn: sqlite3.Connection, video_id: str) -> dict[str, int]:
             f"SELECT COUNT(*) FROM {table} WHERE video_id=?", (video_id,)
         ).fetchone()[0]
     return counts
+
+
+def pipeline_complete(conn: sqlite3.Connection, video_id: str, stage_names: Iterable[str]) -> bool:
+    """True when every named stage finished (status 'done' or 'skipped')."""
+    rows = conn.execute("SELECT stage, status FROM stages WHERE video_id=?", (video_id,)).fetchall()
+    status = {row["stage"]: row["status"] for row in rows}
+    return all(status.get(name) in ("done", "skipped") for name in stage_names)
