@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +67,10 @@ def _expand_paths(raw: list[str]) -> list[Path]:
         else:
             files.append(path)
     return files
+
+
+def _is_url(item: str) -> bool:
+    return item.lower().startswith(("http://", "https://"))
 
 
 def _short_ts(value: str | None) -> str:
@@ -175,13 +180,13 @@ def _root(
 # --------------------------------------------------------------------------- #
 
 
-def _check_tool(name: str) -> tuple[bool, str]:
+def _check_tool(name: str, version_flag: str = "-version") -> tuple[bool, str]:
     path = shutil.which(name)
     if path is None:
         return False, "not found on PATH"
     try:
         result = subprocess.run(
-            [name, "-version"],
+            [name, version_flag],
             capture_output=True,
             text=True,
             timeout=15,
@@ -295,6 +300,14 @@ def doctor() -> None:
     ffprobe_ok, detail = _check_tool("ffprobe")
     rows.append(("ffprobe", ffprobe_ok, detail))
 
+    # Optional: only needed for `vidcp ingest <url>`. Absence renders as dim
+    # info (status None), not FAIL, and never affects the exit code.
+    ytdlp_ok, detail = _check_tool("yt-dlp", "--version")
+    if ytdlp_ok:
+        rows.append(("yt-dlp (optional)", True, detail))
+    else:
+        rows.append(("yt-dlp (optional)", None, f"{detail} — needed only for URL ingest"))
+
     home_ok, detail = _check_home_writable(settings.home)
     rows.append((f"home writable ({settings.home})", home_ok, detail))
 
@@ -319,7 +332,13 @@ def doctor() -> None:
 
 
 def _ingest_one(
-    conn, path: Path, settings: Settings, force: bool, console: Console = console
+    conn,
+    path: Path,
+    settings: Settings,
+    force: bool,
+    console: Console = console,
+    origin: str | None = None,
+    title: str | None = None,
 ) -> str:
     """Ingest a single file. Returns:
     'ingested' | 'failed_stages' | 'already' | 'missing' | 'not_media'.
@@ -327,6 +346,10 @@ def _ingest_one(
     ``console`` defaults to the module-level console; callers that need clean
     stdout (e.g. ``sync --json``) pass a stderr console instead so these Rich
     status lines don't land ahead of a JSON document on stdout.
+
+    ``origin`` and ``title`` override the stored ``videos.path`` and
+    ``videos.title`` — used by URL ingest, where the meaningful source is the
+    URL, not the temp file the download landed in.
     """
     if not path.exists():
         return "missing"
@@ -345,8 +368,8 @@ def _ingest_one(
         add_source(path, video_id)
     if existing is None:
         conn.execute(
-            "INSERT INTO videos(id, path, ingested_at, has_audio) VALUES (?, ?, ?, 1)",
-            (video_id, str(path.resolve()), now_iso()),
+            "INSERT INTO videos(id, path, title, ingested_at, has_audio) VALUES (?, ?, ?, ?, 1)",
+            (video_id, origin or str(path.resolve()), title, now_iso()),
         )
         conn.commit()
     outcomes = _run_with_progress(VideoContext(video_id, conn, settings), default_stages())
@@ -359,19 +382,22 @@ def _ingest_one(
 
 @app.command()
 def ingest(
-    paths: Optional[list[str]] = typer.Argument(None, help="Video files or directories."),
+    paths: Optional[list[str]] = typer.Argument(
+        None, help="Video files, directories, or http(s) URLs."
+    ),
     force: bool = typer.Option(False, "--force", help="Re-ingest even if already present."),
     whisper_model: Optional[str] = typer.Option(
         None, "--whisper-model", help="Override the whisper model for this run."
     ),
     no_ocr: bool = typer.Option(False, "--no-ocr", help="Skip OCR for this run."),
 ) -> None:
-    """Ingest one or more video files into the library.
+    """Ingest video files, directories, or URLs into the library.
 
-    Example: vidcp ingest clip.mp4 ~/Movies
+    URLs are downloaded with yt-dlp (must be on PATH), then ingested like any
+    file. Example: vidcp ingest clip.mp4 https://youtube.com/watch?v=abc
     """
     if not paths:
-        raise VidcpError("no paths given", hint="usage: vidcp ingest <file-or-dir> ...")
+        raise VidcpError("no paths given", hint="usage: vidcp ingest <file-dir-or-url> ...")
     settings = get_settings()
     overrides: dict[str, object] = {}
     if whisper_model:
@@ -381,9 +407,14 @@ def ingest(
     if overrides:
         # A per-run copy so the overrides flow into stage config fingerprints.
         settings = settings.model_copy(update=overrides)
-    files = _expand_paths(paths)
-    if not files:
+    urls = [item for item in paths if _is_url(item)]
+    files = _expand_paths([item for item in paths if not _is_url(item)])
+    if not files and not urls:
         raise VidcpError("no video files found in the given paths")
+    if urls:
+        from vidcp.download import ensure_ytdlp
+
+        ensure_ytdlp()  # fail fast before any work if the binary is missing
 
     conn = connect()
     ingested = 0
@@ -403,6 +434,41 @@ def ingest(
                 ingested += 1
             elif status == "ingested":
                 ingested += 1
+
+        if urls:
+            from vidcp.download import download_url
+
+            tmp_root = settings.home / "tmp"
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            for url in urls:
+                console.print(f"downloading {url}")
+                # The store keeps the canonical source.* copy, so the download
+                # itself is disposable — TemporaryDirectory guarantees cleanup.
+                with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
+                    try:
+                        downloaded = download_url(url, Path(tmp))
+                    except VidcpError as exc:
+                        console.print(f"[red]skip[/red] {url}: {exc.message}")
+                        errors += 1
+                        continue
+                    status = _ingest_one(
+                        conn,
+                        downloaded.path,
+                        settings,
+                        force,
+                        origin=downloaded.url,
+                        title=downloaded.title,
+                    )
+                    if status == "not_media":
+                        console.print(
+                            f"[red]skip[/red] {url}: downloaded file is not a recognised media file"
+                        )
+                        errors += 1
+                    elif status == "failed_stages":
+                        had_failures = True
+                        ingested += 1
+                    elif status == "ingested":
+                        ingested += 1
     finally:
         conn.close()
 

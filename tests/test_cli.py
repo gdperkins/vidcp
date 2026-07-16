@@ -81,3 +81,28 @@ def test_mcp_command_registered():
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0
     assert "MCP server" in result.output
+
+
+# --- doctor: optional yt-dlp row ---------------------------------------------
+
+
+def test_doctor_reports_ytdlp_row():
+    result = runner.invoke(app, ["doctor"])
+    assert "yt-dlp" in result.output
+
+
+def test_doctor_missing_ytdlp_is_not_fatal(monkeypatch):
+    import vidcp.cli as cli_mod
+
+    real_check = cli_mod._check_tool
+
+    def fake_check(name, version_flag="-version"):
+        if name == "yt-dlp":
+            return False, "not found on PATH"
+        return real_check(name, version_flag)
+
+    monkeypatch.setattr(cli_mod, "_check_tool", fake_check)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output  # ffmpeg/ffprobe/db still OK
+    assert "yt-dlp" in result.output
+    assert "FAIL" not in result.output

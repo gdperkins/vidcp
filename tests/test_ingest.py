@@ -1,4 +1,6 @@
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -141,3 +143,96 @@ def test_delete_keep_artifacts(fixtures):
     assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
     conn.close()
     assert artifact.exists()  # kept on disk
+
+
+# --- URL ingest (download_url is stubbed — no network, no yt-dlp) -----------
+
+
+def _fake_download(fixture: Path, title: str = "Fake Talk"):
+    from vidcp.download import DownloadedVideo
+
+    def fake(url: str, dest_dir: Path) -> DownloadedVideo:
+        dest = Path(dest_dir) / "Fake Talk [abc].mp4"
+        shutil.copy2(fixture, dest)
+        return DownloadedVideo(path=dest, title=title, url=url)
+
+    return fake
+
+
+URL = "https://example.com/watch?v=abc123"
+
+
+def test_ingest_url_downloads_and_ingests(fixtures, monkeypatch):
+    monkeypatch.setattr("vidcp.download.ensure_ytdlp", lambda: None)
+    monkeypatch.setattr("vidcp.download.download_url", _fake_download(fixtures["color.mp4"]))
+    result = runner.invoke(app, ["ingest", "--no-ocr", URL])
+    assert result.exit_code == 0, result.output
+    conn = connect()
+    try:
+        row = conn.execute("SELECT id, path, title FROM videos").fetchone()
+        assert row is not None
+        assert row["path"] == URL  # origin is the URL, not the temp file
+        assert row["title"] == "Fake Talk"
+        vid = row["id"]
+    finally:
+        conn.close()
+    from vidcp.store import artifact_dir
+
+    assert any(artifact_dir(vid).glob("source.*"))  # canonical copy in the store
+    tmp_root = get_settings().home / "tmp"
+    assert list(tmp_root.iterdir()) == []  # per-run temp dir cleaned up
+
+
+def test_ingest_mixed_file_and_url(fixtures, tmp_path, monkeypatch):
+    monkeypatch.setattr("vidcp.download.ensure_ytdlp", lambda: None)
+    monkeypatch.setattr("vidcp.download.download_url", _fake_download(fixtures["color.mp4"]))
+    local = tmp_path / "local.mp4"
+    shutil.copy2(fixtures["cuts.mp4"], local)  # different content -> different hash
+    result = runner.invoke(app, ["ingest", "--no-ocr", str(local), URL])
+    assert result.exit_code == 0, result.output
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_ingest_url_download_failure_is_skip(monkeypatch):
+    from vidcp.errors import VidcpError
+
+    monkeypatch.setattr("vidcp.download.ensure_ytdlp", lambda: None)
+
+    def boom(url, dest_dir):
+        raise VidcpError("download failed: ERROR: Unsupported URL")
+
+    monkeypatch.setattr("vidcp.download.download_url", boom)
+    result = runner.invoke(app, ["ingest", URL])
+    assert result.exit_code == 1
+    assert "skip" in result.output and "Unsupported URL" in result.output
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
+    finally:
+        conn.close()
+    tmp_root = get_settings().home / "tmp"
+    assert not tmp_root.exists() or list(tmp_root.iterdir()) == []
+
+
+def test_ingest_url_without_ytdlp_fails_fast(monkeypatch):
+    import vidcp.download as download
+
+    monkeypatch.setattr(download.shutil, "which", lambda name: None)
+    result = runner.invoke(app, ["ingest", URL])
+    assert result.exit_code != 0
+    # CliRunner never renders VidcpError (see test_clips.py::test_clip_command_
+    # bad_timestamp) — assert on the captured exception per suite convention.
+    assert isinstance(result.exception, VidcpError)
+    assert "yt-dlp not found" in result.exception.message
+
+
+def test_is_url_case_insensitive_scheme():
+    from vidcp.cli import _is_url
+
+    assert _is_url("https://example.com/v")
+    assert _is_url("HTTPS://example.com/v")
+    assert not _is_url("/videos/HTTPS-notes.mp4")

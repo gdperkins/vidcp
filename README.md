@@ -13,14 +13,16 @@ uv tool install .
 uv run vidcp --help
 ```
 
-Requires **Python 3.11+** and **ffmpeg/ffprobe** on your `PATH`. Run
-`vidcp doctor` to check your environment.
+Requires **Python 3.11+** and **ffmpeg/ffprobe** on your `PATH`; URL ingest
+additionally needs **yt-dlp** on your `PATH`. Run `vidcp doctor` to check
+your environment.
 
 ## Quickstart
 
 ```bash
 vidcp doctor                       # verify ffmpeg, DB, sqlite-vec, models
 vidcp ingest talk.mp4              # probe → scenes/keyframes → transcribe → ocr → embed
+vidcp ingest https://youtube.com/watch?v=abc   # download with yt-dlp, then ingest
 vidcp list                         # what's in the library
 vidcp search "neural networks"     # hybrid keyword + semantic search
 vidcp search "whiteboard diagram" --kind visual   # CLIP visual search over keyframes
@@ -103,6 +105,10 @@ variables (env wins).
 
 ## Constraints (v0.2)
 
+- **URL ingest** shells out to `yt-dlp` (`brew install yt-dlp` or
+  `pipx install yt-dlp`); keep it current — video sites regularly break older
+  extractor versions. Downloads are single videos only (no playlists), and
+  the library stores the source URL as the video's path.
 - **CPU whisper is slow** — expect roughly real-time-ish transcription with the
   `small` model; use `--whisper-model tiny` (or `VIDCP_WHISPER_MODEL=tiny`) for
   speed at some accuracy cost.
