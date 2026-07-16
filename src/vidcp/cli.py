@@ -180,13 +180,13 @@ def _root(
 # --------------------------------------------------------------------------- #
 
 
-def _check_tool(name: str) -> tuple[bool, str]:
+def _check_tool(name: str, version_flag: str = "-version") -> tuple[bool, str]:
     path = shutil.which(name)
     if path is None:
         return False, "not found on PATH"
     try:
         result = subprocess.run(
-            [name, "-version"],
+            [name, version_flag],
             capture_output=True,
             text=True,
             timeout=15,
@@ -299,6 +299,14 @@ def doctor() -> None:
 
     ffprobe_ok, detail = _check_tool("ffprobe")
     rows.append(("ffprobe", ffprobe_ok, detail))
+
+    # Optional: only needed for `vidcp ingest <url>`. Absence renders as dim
+    # info (status None), not FAIL, and never affects the exit code.
+    ytdlp_ok, detail = _check_tool("yt-dlp", "--version")
+    if ytdlp_ok:
+        rows.append(("yt-dlp (optional)", True, detail))
+    else:
+        rows.append(("yt-dlp (optional)", None, f"{detail} — needed only for URL ingest"))
 
     home_ok, detail = _check_home_writable(settings.home)
     rows.append((f"home writable ({settings.home})", home_ok, detail))
