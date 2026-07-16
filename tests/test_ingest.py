@@ -224,4 +224,7 @@ def test_ingest_url_without_ytdlp_fails_fast(monkeypatch):
     monkeypatch.setattr(download.shutil, "which", lambda name: None)
     result = runner.invoke(app, ["ingest", URL])
     assert result.exit_code != 0
-    assert "yt-dlp not found" in result.output
+    # CliRunner never renders VidcpError (see test_clips.py::test_clip_command_
+    # bad_timestamp) — assert on the captured exception per suite convention.
+    assert isinstance(result.exception, VidcpError)
+    assert "yt-dlp not found" in result.exception.message

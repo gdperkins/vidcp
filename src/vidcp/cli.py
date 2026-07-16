@@ -406,13 +406,7 @@ def ingest(
     if urls:
         from vidcp.download import ensure_ytdlp
 
-        try:
-            ensure_ytdlp()  # fail fast before any work if the binary is missing
-        except VidcpError as exc:
-            console.print(f"[bold red]Error:[/bold red] {exc.message}")
-            if exc.hint:
-                console.print(f"[dim]{exc.hint}[/dim]")
-            raise typer.Exit(code=1)
+        ensure_ytdlp()  # fail fast before any work if the binary is missing
 
     conn = connect()
     ingested = 0
