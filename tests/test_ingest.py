@@ -228,3 +228,11 @@ def test_ingest_url_without_ytdlp_fails_fast(monkeypatch):
     # bad_timestamp) — assert on the captured exception per suite convention.
     assert isinstance(result.exception, VidcpError)
     assert "yt-dlp not found" in result.exception.message
+
+
+def test_is_url_case_insensitive_scheme():
+    from vidcp.cli import _is_url
+
+    assert _is_url("https://example.com/v")
+    assert _is_url("HTTPS://example.com/v")
+    assert not _is_url("/videos/HTTPS-notes.mp4")

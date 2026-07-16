@@ -29,6 +29,7 @@ def _install_fake_run(
     def fake_run(cmd, **kwargs):
         assert cmd[0] == "yt-dlp"
         assert "--no-playlist" in cmd
+        assert "--write-info-json" in cmd
         if returncode == 0:
             if write_media:
                 (dest_dir / "A Talk [abc123].mp4").write_bytes(b"\x00" * 1024)

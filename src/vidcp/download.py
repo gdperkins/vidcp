@@ -64,7 +64,7 @@ def download_url(url: str, dest_dir: Path) -> DownloadedVideo:
     for info_file in dest_dir.glob("*.info.json"):
         try:
             title = json.loads(info_file.read_text()).get("title") or ""
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             title = ""
         info_file.unlink(missing_ok=True)
     media = [f for f in dest_dir.iterdir() if f.is_file()]

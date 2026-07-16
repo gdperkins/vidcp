@@ -70,7 +70,7 @@ def _expand_paths(raw: list[str]) -> list[Path]:
 
 
 def _is_url(item: str) -> bool:
-    return item.startswith(("http://", "https://"))
+    return item.lower().startswith(("http://", "https://"))
 
 
 def _short_ts(value: str | None) -> str:
