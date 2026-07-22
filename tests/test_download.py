@@ -34,7 +34,9 @@ def _install_fake_run(
             if write_media:
                 (dest_dir / "A Talk [abc123].mp4").write_bytes(b"\x00" * 1024)
             if write_info:
-                (dest_dir / "A Talk [abc123].info.json").write_text(json.dumps({"title": title}))
+                (dest_dir / "A Talk [abc123].info.json").write_text(
+                    json.dumps({"title": title}), encoding="utf-8"
+                )
         return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr=stderr)
 
     monkeypatch.setattr(download.subprocess, "run", fake_run)

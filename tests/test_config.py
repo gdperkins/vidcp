@@ -54,7 +54,7 @@ def test_env_overrides_default(monkeypatch):
 def test_toml_overrides_default(monkeypatch, tmp_path):
     home = tmp_path / "h"
     home.mkdir()
-    (home / "config.toml").write_text('whisper_model = "base"\n')
+    (home / "config.toml").write_text('whisper_model = "base"\n', encoding="utf-8")
     monkeypatch.setenv("VIDCP_HOME", str(home))
     monkeypatch.delenv("VIDCP_WHISPER_MODEL", raising=False)
     assert Settings().whisper_model == "base"
@@ -63,7 +63,7 @@ def test_toml_overrides_default(monkeypatch, tmp_path):
 def test_env_beats_toml(monkeypatch, tmp_path):
     home = tmp_path / "h"
     home.mkdir()
-    (home / "config.toml").write_text('whisper_model = "base"\n')
+    (home / "config.toml").write_text('whisper_model = "base"\n', encoding="utf-8")
     monkeypatch.setenv("VIDCP_HOME", str(home))
     monkeypatch.setenv("VIDCP_WHISPER_MODEL", "tiny")
     assert Settings().whisper_model == "tiny"

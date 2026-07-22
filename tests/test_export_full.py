@@ -67,4 +67,4 @@ def test_export_command_json_and_file(tmp_path, speech_fixture):
     dest = tmp_path / "out.md"
     result = runner.invoke(app, ["export", vid[:8], "--format", "markdown", "-o", str(dest)])
     assert result.exit_code == 0
-    assert dest.read_text().startswith("# ")
+    assert dest.read_text(encoding="utf-8").startswith("# ")

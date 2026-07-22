@@ -37,7 +37,8 @@ def test_vidcp_error_renders_friendly_not_traceback():
         ["uv", "run", "vidcp", "inspect", "deadbeef"],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 1, combined
@@ -51,7 +52,8 @@ def test_doctor_runs_and_exits_zero():
         ["uv", "run", "vidcp", "doctor"],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -64,7 +66,8 @@ def test_doctor_creates_migration_001_database():
         ["uv", "run", "vidcp", "doctor"],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     db_path = get_settings().db_path

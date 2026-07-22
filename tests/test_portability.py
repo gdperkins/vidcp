@@ -17,6 +17,7 @@ from pathlib import Path
 import vidcp
 
 SRC_DIR = Path(vidcp.__file__).parent
+TESTS_DIR = Path(__file__).parent
 
 # Win32 process-creation flags (stable Win32 API values; the subprocess module
 # only defines the named constants on Windows).
@@ -49,20 +50,21 @@ def _open_mode(node: ast.Call) -> str:
 
 
 def test_source_text_io_declares_encoding():
-    """Every text-mode IO call in src/ must pass encoding= explicitly.
+    """Every text-mode IO call in src/ and tests/ must pass encoding= explicitly.
 
     Without it, Windows uses the ANSI code page (cp1252), which crashes or
     mangles non-ASCII transcript text, titles, and ffprobe/yt-dlp output.
     """
     offenders: list[str] = []
-    for py in sorted(SRC_DIR.rglob("*.py")):
+    files = sorted(SRC_DIR.rglob("*.py")) + sorted(TESTS_DIR.rglob("*.py"))
+    for py in files:
         tree = ast.parse(py.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             kwarg_names = {kw.arg for kw in node.keywords}
             name = _call_name(node)
-            where = f"{py.relative_to(SRC_DIR)}:{node.lineno}"
+            where = f"{py.relative_to(SRC_DIR.parents[1])}:{node.lineno}"
             if name in {"write_text", "read_text"} and "encoding" not in kwarg_names:
                 offenders.append(f"{where} {name}() without encoding=")
             elif name == "open" and isinstance(node.func, ast.Name):

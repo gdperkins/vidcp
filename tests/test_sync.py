@@ -21,7 +21,7 @@ def _video_dir(tmp_path, fixtures):
     d = tmp_path / "videos"
     d.mkdir()
     shutil.copy2(fixtures["color.mp4"], d / "color.mp4")
-    (d / "notes.txt").write_text("not a video")
+    (d / "notes.txt").write_text("not a video", encoding="utf-8")
     return d
 
 
@@ -164,7 +164,7 @@ def test_sync_skips_not_media_file(tmp_path, fixtures):
     d = tmp_path / "videos"
     d.mkdir()
     shutil.copy2(fixtures["color.mp4"], d / "color.mp4")
-    (d / "broken.mp4").write_text("this is not a real video")
+    (d / "broken.mp4").write_text("this is not a real video", encoding="utf-8")
 
     result = runner.invoke(app, ["sync", "--no-ocr", "--json", str(d)])
     assert result.exit_code == 0, result.output

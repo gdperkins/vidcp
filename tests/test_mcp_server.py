@@ -360,7 +360,11 @@ async def test_ingest_new_file_spawns_detached_ingest(client, spawn_recorder, sp
     assert payload["video_id"] == sha256_file(speech_fixture)
     ((cmd, kwargs),) = spawn_recorder
     assert cmd == [sys.executable, "-m", "vidcp", "ingest", str(speech_fixture)]
-    assert kwargs["start_new_session"] is True
+    if sys.platform == "win32":
+        assert "start_new_session" not in kwargs
+        assert kwargs["creationflags"]  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        assert kwargs["start_new_session"] is True
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
@@ -397,7 +401,7 @@ async def test_ingest_missing_file_errors(client, spawn_recorder):
 
 async def test_ingest_non_media_file_errors(client, spawn_recorder, tmp_path):
     bogus = tmp_path / "notes.mp4"
-    bogus.write_text("definitely not a video")
+    bogus.write_text("definitely not a video", encoding="utf-8")
     result = await client.call_tool("ingest", {"path": str(bogus)})
     assert "not a recognised media file" in error_text(result)
     assert spawn_recorder == []
@@ -490,7 +494,10 @@ async def test_search_rejects_unknown_kind_hint(client):
 
 def test_python_dash_m_vidcp_runs():
     result = subprocess.run(
-        [sys.executable, "-m", "vidcp", "--help"], capture_output=True, text=True
+        [sys.executable, "-m", "vidcp", "--help"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0
     assert "vidcp" in result.stdout

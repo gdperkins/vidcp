@@ -208,7 +208,9 @@ def test_ingest_url_download_failure_is_skip(monkeypatch):
     monkeypatch.setattr("vidcp.download.download_url", boom)
     result = runner.invoke(app, ["ingest", URL])
     assert result.exit_code == 1
-    assert "skip" in result.output and "Unsupported URL" in result.output
+    # Collapse whitespace: Rich wraps at the console width, which differs by OS.
+    output = " ".join(result.output.split())
+    assert "skip" in output and "Unsupported URL" in output
     conn = connect()
     try:
         assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
