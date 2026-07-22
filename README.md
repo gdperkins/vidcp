@@ -17,6 +17,10 @@ Requires **Python 3.11+** and **ffmpeg/ffprobe** on your `PATH`; URL ingest
 additionally needs **yt-dlp** on your `PATH`. Run `vidcp doctor` to check
 your environment.
 
+Works on macOS, Linux, and Windows. On Windows, install the external tools
+with e.g. `winget install Gyan.FFmpeg yt-dlp.yt-dlp` (or scoop/choco) and
+restart the terminal so they land on `PATH`.
+
 ## Quickstart
 
 ```bash

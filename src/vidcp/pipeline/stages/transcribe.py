@@ -84,5 +84,6 @@ class TranscribeStage(Stage):
                     "segments": raw_segments,
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )

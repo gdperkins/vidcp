@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -188,7 +189,8 @@ def _check_tool(name: str, version_flag: str = "-version") -> tuple[bool, str]:
         result = subprocess.run(
             [name, version_flag],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )
@@ -202,7 +204,7 @@ def _check_home_writable(home: Path) -> tuple[bool, str]:
     try:
         home.mkdir(parents=True, exist_ok=True)
         probe = home / ".vidcp_write_test"
-        probe.write_text("ok")
+        probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
         return False, str(exc)
@@ -981,7 +983,7 @@ def export(
         conn.close()
 
     if output:
-        Path(output).write_text(content)
+        Path(output).write_text(content, encoding="utf-8")
         console.print(f"wrote {output}")
     else:
         print(content)
@@ -1036,6 +1038,15 @@ def mcp_command() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _configure_windows_stdio() -> None:
+    """Force UTF-8 stdio on Windows, where consoles default to a legacy code page."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
     """Run the CLI, rendering user-facing errors instead of tracebacks.
 
@@ -1045,6 +1056,7 @@ def main() -> None:
     already rendered by Click's standalone handling via its ``.show()``; the
     ``except ClickException`` branch below is a defensive fallback.
     """
+    _configure_windows_stdio()
     try:
         app()
     except click.ClickException as exc:

@@ -25,6 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Every CLI command that prints data also offers `--json` (via Pydantic `model_dump(mode="json")`); human output uses Rich tables.
 - SQL migrations are append-only plain-string DDL in `db.py` — never edit an existing migration; the list index is the schema version.
 - Model-heavy tests get the `slow` pytest marker.
+- Windows portability: all text-mode IO (`open`, `read_text`/`write_text`, `subprocess` text capture) must pass `encoding="utf-8"` explicitly — Windows defaults to cp1252. Enforced by `tests/test_portability.py`; detached spawns use `_detach_kwargs()` in `mcp_server.py`, not bare `start_new_session`.
 
 ## Architecture notes
 

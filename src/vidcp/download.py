@@ -53,7 +53,8 @@ def download_url(url: str, dest_dir: Path) -> DownloadedVideo:
             url,
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
@@ -63,7 +64,7 @@ def download_url(url: str, dest_dir: Path) -> DownloadedVideo:
     title = ""
     for info_file in dest_dir.glob("*.info.json"):
         try:
-            title = json.loads(info_file.read_text()).get("title") or ""
+            title = json.loads(info_file.read_text(encoding="utf-8")).get("title") or ""
         except (OSError, ValueError, AttributeError):
             title = ""
         info_file.unlink(missing_ok=True)

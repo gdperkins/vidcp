@@ -51,7 +51,8 @@ def extract_clip(
             str(output),
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0 or not output.exists() or output.stat().st_size == 0:

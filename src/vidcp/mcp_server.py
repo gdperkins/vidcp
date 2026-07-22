@@ -203,6 +203,19 @@ def get_keyframe(video_id: str, ts_s: float):
     ]
 
 
+# Win32 process-creation flags; subprocess only defines the named constants on
+# Windows, and start_new_session is silently ignored there.
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+
+def _detach_kwargs() -> dict:
+    """Popen kwargs that detach a child from this process's session/console."""
+    if sys.platform == "win32":
+        return {"creationflags": _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
 def _spawn_ingest(path: Path, force: bool) -> None:
     """Launch a detached background ingest; the child owns all DB/store writes."""
     cmd = [sys.executable, "-m", "vidcp", "ingest"]
@@ -214,7 +227,7 @@ def _spawn_ingest(path: Path, force: bool) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **_detach_kwargs(),
     )
 
 
